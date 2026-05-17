@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Readable } from "stream";
 import {
-  assertBusinessFolderId,
+  assertUploadFolderId,
   DriveConfigError,
   ensureDriveAuth,
   getAuthenticatedUserEmail,
@@ -75,7 +75,7 @@ export async function POST(req: NextRequest) {
     }
 
     step = "hedef klasör doğrulama";
-    await assertBusinessFolderId(businessFolderId);
+    await assertUploadFolderId(businessFolderId);
 
     step = "dosya buffer hazırlama";
     const bytes = await uploadFile.arrayBuffer();

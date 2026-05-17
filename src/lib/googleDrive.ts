@@ -1,6 +1,7 @@
 import type { Readable } from "stream";
 import { google } from "googleapis";
 import { OAuth2Client } from "google-auth-library";
+import { buildVisitFolderName } from "@/lib/drive/folderNaming";
 import { createMd5Passthrough, escapeDriveQueryValue } from "@/lib/utils/stream";
 
 const FOLDER_MIME = "application/vnd.google-apps.folder";
@@ -36,6 +37,23 @@ export type UploadResult = {
 export type RootFolderInfo = {
   id: string;
   name: string;
+};
+
+export type DriveBrowseFile = {
+  id: string;
+  name: string;
+  mimeType: string;
+  modifiedTime?: string;
+  size?: string;
+  thumbnailLink?: string;
+  webViewLink?: string;
+};
+
+export type DriveBrowseResult = {
+  folder: BusinessFolder;
+  parentId: string | null;
+  folders: BusinessFolder[];
+  files: DriveBrowseFile[];
 };
 
 let cachedOAuth: OAuth2Client | null = null;
@@ -240,13 +258,77 @@ export async function assertBusinessFolderId(folderId: string): Promise<void> {
   }
 }
 
+/** Yükleme hedefi: kök altı işletme veya işletme altı ziyaret klasörü. */
+export async function assertUploadFolderId(folderId: string): Promise<void> {
+  await ensureDriveAuth();
+  const drive = getDriveClient();
+  const rootFolderId = getRootFolderId();
+
+  const res = await drive.files.get({
+    fileId: folderId,
+    fields: "id, mimeType, parents",
+    supportsAllDrives: true,
+  });
+
+  if (res.data.mimeType !== FOLDER_MIME) {
+    throw new Error("Geçersiz hedef: bir klasör ID'si gerekli.");
+  }
+
+  const parents = res.data.parents ?? [];
+  if (parents.includes(rootFolderId)) {
+    return;
+  }
+
+  if (parents.length === 1) {
+    const parentRes = await drive.files.get({
+      fileId: parents[0],
+      fields: "id, mimeType, parents",
+      supportsAllDrives: true,
+    });
+    if (
+      parentRes.data.mimeType === FOLDER_MIME &&
+      parentRes.data.parents?.includes(rootFolderId)
+    ) {
+      return;
+    }
+  }
+
+  throw new Error(
+    "Geçersiz yükleme hedefi. Lütfen listeden bir işletme seçin.",
+  );
+}
+
+export async function getOrCreateVisitFolder(
+  businessFolderId: string,
+  businessName: string,
+): Promise<{ folder: BusinessFolder; created: boolean }> {
+  await assertBusinessFolderId(businessFolderId);
+
+  const trimmedName = businessName.trim();
+  if (!trimmedName) {
+    throw new Error("İşletme adı boş olamaz.");
+  }
+
+  const visitName = buildVisitFolderName(trimmedName);
+  const existing = await findFolderByNameUnderParent(
+    businessFolderId,
+    visitName,
+  );
+  if (existing) {
+    return { folder: existing, created: false };
+  }
+
+  const created = await createFolderUnderParent(businessFolderId, visitName);
+  return { folder: created, created: true };
+}
+
 export async function uploadStreamToDrive(params: {
   folderId: string;
   fileName: string;
   mimeType: string;
   body: Readable;
 }): Promise<UploadResult> {
-  await assertBusinessFolderId(params.folderId);
+  await assertUploadFolderId(params.folderId);
 
   const drive = getDriveClient();
   const { stream: checksumStream, getDigestBase64 } = createMd5Passthrough();
@@ -296,15 +378,15 @@ export async function uploadStreamToDrive(params: {
   };
 }
 
-async function findBusinessFolderByName(
+async function findFolderByNameUnderParent(
+  parentId: string,
   name: string,
 ): Promise<BusinessFolder | null> {
   const drive = getDriveClient();
-  const rootFolderId = getRootFolderId();
   const safeName = escapeDriveQueryValue(name);
 
   const res = await drive.files.list({
-    q: `name='${safeName}' and '${rootFolderId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
+    q: `name='${safeName}' and '${parentId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
     fields: "files(id, name)",
     pageSize: 1,
     supportsAllDrives: true,
@@ -316,16 +398,24 @@ async function findBusinessFolderByName(
   return { id: file.id, name: file.name };
 }
 
-async function createBusinessFolder(name: string): Promise<BusinessFolder> {
+async function findBusinessFolderByName(
+  name: string,
+): Promise<BusinessFolder | null> {
+  return findFolderByNameUnderParent(getRootFolderId(), name);
+}
+
+async function createFolderUnderParent(
+  parentId: string,
+  name: string,
+): Promise<BusinessFolder> {
   await ensureDriveAuth();
   const drive = getDriveClient();
-  const rootFolderId = getRootFolderId();
 
   const res = await drive.files.create({
     requestBody: {
       name,
       mimeType: FOLDER_MIME,
-      parents: [rootFolderId],
+      parents: [parentId],
     },
     fields: "id, name",
     supportsAllDrives: true,
@@ -338,6 +428,110 @@ async function createBusinessFolder(name: string): Promise<BusinessFolder> {
   return { id: res.data.id, name: res.data.name };
 }
 
+async function createBusinessFolder(name: string): Promise<BusinessFolder> {
+  return createFolderUnderParent(getRootFolderId(), name);
+}
+
+/** Klasörün uygulama kök dizini altında olduğunu doğrular. */
+export async function assertReadableFolderId(
+  folderId: string,
+): Promise<BusinessFolder> {
+  await ensureDriveAuth();
+  const drive = getDriveClient();
+  const rootFolderId = getRootFolderId();
+
+  let targetName = "";
+  let walker: string | undefined = folderId;
+
+  for (let depth = 0; depth < 10; depth++) {
+    if (!walker) break;
+
+    const currentId: string = walker;
+    const fileRes = await drive.files.get({
+      fileId: currentId,
+      fields: "id, name, mimeType, parents",
+      supportsAllDrives: true,
+    });
+
+    if (currentId === folderId) {
+      if (fileRes.data.mimeType !== FOLDER_MIME) {
+        throw new Error("Geçersiz klasör.");
+      }
+      if (!fileRes.data.id || !fileRes.data.name) {
+        throw new Error("Klasör bilgisi alınamadı.");
+      }
+      targetName = fileRes.data.name;
+    }
+
+    if (currentId === rootFolderId) {
+      return { id: folderId, name: targetName || fileRes.data.name! };
+    }
+
+    const parents = fileRes.data.parents ?? [];
+    walker = parents[0];
+  }
+
+  throw new Error("Bu klasöre erişim yok.");
+}
+
+/** Klasör içeriğini listeler (alt klasörler + dosyalar). */
+export async function listFolderContents(
+  folderId: string,
+): Promise<DriveBrowseResult> {
+  const folder = await assertReadableFolderId(folderId);
+  const drive = getDriveClient();
+  const rootFolderId = getRootFolderId();
+
+  const meta = await drive.files.get({
+    fileId: folderId,
+    fields: "parents",
+    supportsAllDrives: true,
+  });
+  const parents = meta.data.parents ?? [];
+  let parentId: string | null = parents[0] ?? null;
+  if (folderId === rootFolderId) {
+    parentId = null;
+  }
+
+  const folders: BusinessFolder[] = [];
+  const files: DriveBrowseFile[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const res = await drive.files.list({
+      q: `'${folderId}' in parents and trashed=false`,
+      fields:
+        "nextPageToken, files(id, name, mimeType, modifiedTime, size, thumbnailLink, webViewLink)",
+      orderBy: "folder,name",
+      pageSize: 200,
+      pageToken,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+
+    for (const file of res.data.files ?? []) {
+      if (!file.id || !file.name || !file.mimeType) continue;
+
+      if (file.mimeType === FOLDER_MIME) {
+        folders.push({ id: file.id, name: file.name });
+      } else {
+        files.push({
+          id: file.id,
+          name: file.name,
+          mimeType: file.mimeType,
+          modifiedTime: file.modifiedTime ?? undefined,
+          size: file.size ?? undefined,
+          thumbnailLink: file.thumbnailLink ?? undefined,
+          webViewLink: file.webViewLink ?? undefined,
+        });
+      }
+    }
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return { folder, parentId, folders, files };
+}
+
 async function safeDeleteFile(fileId: string) {
   try {
     const drive = getDriveClient();
@@ -345,4 +539,104 @@ async function safeDeleteFile(fileId: string) {
   } catch {
     // yut
   }
+}
+
+type DriveItemMeta = {
+  id: string;
+  name: string;
+  mimeType: string;
+};
+
+/** Öğenin uygulama kök klasörü altında olduğunu doğrular (kök silinemez). */
+export async function assertDeletableItemId(
+  itemId: string,
+): Promise<DriveItemMeta> {
+  await ensureDriveAuth();
+  const drive = getDriveClient();
+  const rootFolderId = getRootFolderId();
+
+  if (itemId === rootFolderId) {
+    throw new Error("Kök klasör silinemez.");
+  }
+
+  let walker: string | undefined = itemId;
+  let target: DriveItemMeta | null = null;
+
+  for (let depth = 0; depth < 12; depth++) {
+    if (!walker) break;
+
+    const currentId: string = walker;
+    const fileRes = await drive.files.get({
+      fileId: currentId,
+      fields: "id, name, mimeType, parents",
+      supportsAllDrives: true,
+    });
+
+    if (currentId === itemId) {
+      if (!fileRes.data.id || !fileRes.data.name || !fileRes.data.mimeType) {
+        throw new Error("Öğe bilgisi alınamadı.");
+      }
+      target = {
+        id: fileRes.data.id,
+        name: fileRes.data.name,
+        mimeType: fileRes.data.mimeType,
+      };
+    }
+
+    if (currentId === rootFolderId) {
+      if (!target) {
+        throw new Error("Öğe bulunamadı.");
+      }
+      return target;
+    }
+
+    const parents = fileRes.data.parents ?? [];
+    walker = parents[0];
+  }
+
+  throw new Error("Bu öğe silinemez.");
+}
+
+async function deleteFolderRecursive(folderId: string) {
+  const drive = getDriveClient();
+  let pageToken: string | undefined;
+
+  do {
+    const res = await drive.files.list({
+      q: `'${folderId}' in parents and trashed=false`,
+      fields: "nextPageToken, files(id, mimeType)",
+      pageSize: 200,
+      pageToken,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+
+    for (const file of res.data.files ?? []) {
+      if (!file.id) continue;
+      if (file.mimeType === FOLDER_MIME) {
+        await deleteFolderRecursive(file.id);
+      } else {
+        await drive.files.delete({
+          fileId: file.id,
+          supportsAllDrives: true,
+        });
+      }
+    }
+
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  await drive.files.delete({ fileId: folderId, supportsAllDrives: true });
+}
+
+/** Drive öğesini kalıcı olarak siler (klasörler içerikleriyle birlikte). */
+export async function deleteDriveItem(itemId: string): Promise<DriveItemMeta> {
+  const item = await assertDeletableItemId(itemId);
+  if (item.mimeType === FOLDER_MIME) {
+    await deleteFolderRecursive(item.id);
+  } else {
+    const drive = getDriveClient();
+    await drive.files.delete({ fileId: item.id, supportsAllDrives: true });
+  }
+  return item;
 }

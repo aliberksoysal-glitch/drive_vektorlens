@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOrCreateBusinessFolder } from "@/lib/googleDrive";
+import {
+  getOrCreateBusinessFolder,
+  getOrCreateVisitFolder,
+} from "@/lib/googleDrive";
 import { apiError, handleDriveRouteError } from "@/lib/drive/errors";
 
 export const dynamic = "force-dynamic";
@@ -18,11 +21,15 @@ export async function POST(request: NextRequest) {
     }
 
     const { folder, created } = await getOrCreateBusinessFolder(name);
+    const { folder: visitFolder, created: visitCreated } =
+      await getOrCreateVisitFolder(folder.id, name);
 
     return NextResponse.json({
       ok: true,
       folder,
+      visitFolder,
       created,
+      visitCreated,
       message: created
         ? "İşletme klasörü oluşturuldu."
         : "Bu isimde klasör zaten mevcut.",
