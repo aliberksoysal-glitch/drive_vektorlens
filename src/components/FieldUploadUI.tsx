@@ -267,7 +267,7 @@ export function FieldUploadPanel({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,video/mp4,video/quicktime,video/x-msvideo"
         multiple
         onChange={onFileChange}
         className="sr-only"
@@ -282,10 +282,10 @@ export function FieldUploadPanel({
         className="flex min-h-[42vh] w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-blue-600 bg-gradient-to-b from-blue-700 to-blue-900 px-6 py-8 text-center text-white shadow-xl shadow-blue-900/25 transition-transform active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
       >
         <span className="text-xl font-bold tracking-tight sm:text-2xl">
-          📸 FOTOĞRAF ÇEK VEYA SEÇ
+          📸 FOTOĞRAF VEYA VİDEO
         </span>
         <span className="max-w-sm text-sm font-medium text-blue-100">
-          Kamerayı aç veya galeriden toplu fotoğraf yükle
+          Kamerayı aç veya galeriden medya seç
         </span>
       </button>
 

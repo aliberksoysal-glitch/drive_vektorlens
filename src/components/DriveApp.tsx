@@ -5,6 +5,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { parseApiResponse } from "@/lib/api/parseResponse";
 import { compressImageForUpload } from "@/lib/client/compressImage";
 import {
+  isUploadableMediaFile,
+  isVideoFile,
+  MAX_VIDEO_BYTES,
+} from "@/lib/mediaTypes";
+import {
   enqueueOfflineUpload,
   flushOfflineUploadQueue,
   getOfflineQueueSize,
@@ -61,7 +66,7 @@ class NetworkUploadError extends Error {
   }
 }
 
-const MAX_PHOTOS = 100;
+const MAX_MEDIA_ITEMS = 100;
 /** Vercel timeout riskini azaltmak için paket başına yükleme adedi */
 const UPLOAD_CHUNK_SIZE = 10;
 
@@ -326,11 +331,6 @@ export function DriveApp() {
     resetFileInput();
   }
 
-  function isImageFile(file: File): boolean {
-    if (file.type.startsWith("image/")) return true;
-    return /\.(jpe?g|png|gif|webp|heic|heif|bmp)$/i.test(file.name);
-  }
-
   function canStartUpload(): boolean {
     if (!selectedBusiness) {
       showToast({ message: "Önce bir işletme seçin.", variant: "error" });
@@ -358,25 +358,47 @@ export function DriveApp() {
       return;
     }
 
-    let imageFiles = Array.from(picked).filter(isImageFile);
-    if (!imageFiles.length) {
+    let rejectedOversizeVideo = false;
+    const mediaFiles: File[] = [];
+
+    for (const file of Array.from(picked)) {
+      if (!isUploadableMediaFile(file)) continue;
+      if (isVideoFile(file) && file.size > MAX_VIDEO_BYTES) {
+        rejectedOversizeVideo = true;
+        continue;
+      }
+      mediaFiles.push(file);
+    }
+
+    if (rejectedOversizeVideo) {
       showToast({
-        message: "Geçerli fotoğraf bulunamadı.",
+        message:
+          "Videolar maksimum 50 MB olabilir, lütfen daha kısa çekin.",
         variant: "error",
       });
+    }
+
+    if (!mediaFiles.length) {
+      if (!rejectedOversizeVideo) {
+        showToast({
+          message: "Geçerli fotoğraf veya video bulunamadı.",
+          variant: "error",
+        });
+      }
       e.target.value = "";
       return;
     }
 
-    if (imageFiles.length > MAX_PHOTOS) {
+    let filesToUpload = mediaFiles;
+    if (filesToUpload.length > MAX_MEDIA_ITEMS) {
       showToast({
-        message: `En fazla ${MAX_PHOTOS} fotoğraf. İlk ${MAX_PHOTOS} dosya yüklenecek.`,
+        message: `En fazla ${MAX_MEDIA_ITEMS} dosya. İlk ${MAX_MEDIA_ITEMS} dosya yüklenecek.`,
         variant: "info",
       });
-      imageFiles = imageFiles.slice(0, MAX_PHOTOS);
+      filesToUpload = filesToUpload.slice(0, MAX_MEDIA_ITEMS);
     }
 
-    const heicHint = imageFiles.some(
+    const heicHint = filesToUpload.some(
       (f) =>
         /^image\/(heic|heif)/i.test(f.type) ||
         /\.(heic|heif)$/i.test(f.name),
@@ -390,7 +412,7 @@ export function DriveApp() {
     }
 
     try {
-      await performUpload(imageFiles);
+      await performUpload(filesToUpload);
     } catch (err) {
       showToast({
         message:
@@ -709,16 +731,20 @@ export function DriveApp() {
       for (let chunkStart = 0; chunkStart < files.length; chunkStart += UPLOAD_CHUNK_SIZE) {
         const chunkRaw = files.slice(chunkStart, chunkStart + UPLOAD_CHUNK_SIZE);
 
-        let chunkFiles: File[];
-        if (skipCompression) {
-          chunkFiles = chunkRaw;
-        } else {
+        const chunkHasImages = chunkRaw.some((f) => !isVideoFile(f));
+        if (chunkHasImages && !skipCompression) {
           setCompressingPhotos(true);
-          try {
-            chunkFiles = await Promise.all(
-              chunkRaw.map((f) => compressImageForUpload(f)),
-            );
-          } finally {
+        }
+        let chunkFiles: File[];
+        try {
+          chunkFiles = await Promise.all(
+            chunkRaw.map(async (f) => {
+              if (skipCompression || isVideoFile(f)) return f;
+              return compressImageForUpload(f);
+            }),
+          );
+        } finally {
+          if (chunkHasImages && !skipCompression) {
             setCompressingPhotos(false);
           }
         }
@@ -1015,10 +1041,10 @@ function UploadLoadingOverlay({
 }) {
   const label =
     compressing && uploaded === 0
-      ? "Fotoğraflar hazırlanıyor…"
+      ? "Görseller hazırlanıyor…"
       : total > 0
-        ? `Fotoğraflar yükleniyor... (${uploaded} / ${total})`
-        : "Fotoğraflar yükleniyor...";
+        ? `Medya yükleniyor... (${uploaded} / ${total})`
+        : "Medya yükleniyor...";
 
   return (
     <div

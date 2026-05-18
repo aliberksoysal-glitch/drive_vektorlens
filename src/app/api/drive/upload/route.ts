@@ -9,14 +9,17 @@ import {
   getDriveClient,
 } from "@/lib/googleDrive";
 import { handleDriveRouteError } from "@/lib/drive/errors";
+import {
+  inferUploadMime,
+  isAllowedUploadMime,
+  maxUploadBytesForMime,
+} from "@/lib/mediaTypes";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-/** İstemci fotoğrafları 10'arlı paketler halinde sıralı yükler; bu rota istek başına tek dosya alır. */
-const MAX_BYTES = 20 * 1024 * 1024;
-const IMAGE_MIME_REGEX = /^image\/(jpeg|png|webp|heic|heif)$/;
+/** İstemci medyayı 10'arlı paketler halinde sıralı yükler; bu rota istek başına tek dosya alır. */
 
 function sanitizeFileName(name: string): string {
   const s = name
@@ -81,24 +84,30 @@ export async function POST(req: NextRequest) {
 
     const uploadFile = file instanceof File ? file : new File([file], "photo.jpg");
 
-    if (uploadFile.size > MAX_BYTES) {
+    const mimeType = inferUploadMime(
+      uploadFile.name || "",
+      uploadFile.type,
+    );
+    const maxBytes = maxUploadBytesForMime(mimeType);
+
+    if (uploadFile.size > maxBytes) {
       return NextResponse.json(
         {
           success: false,
           ok: false,
-          error: `Dosya boyutu limiti aşıldı (maks. ${MAX_BYTES / 1024 / 1024} MB).`,
+          error: `Dosya boyutu limiti aşıldı (maks. ${maxBytes / 1024 / 1024} MB).`,
         },
         { status: 413 },
       );
     }
 
-    const mimeType = uploadFile.type || "image/jpeg";
-    if (!IMAGE_MIME_REGEX.test(mimeType)) {
+    if (!isAllowedUploadMime(mimeType)) {
       return NextResponse.json(
         {
           success: false,
           ok: false,
-          error: "Geçersiz dosya türü. Sadece görsel dosyalar kabul edilir.",
+          error:
+            "Geçersiz dosya türü. Görsel (JPEG, PNG, WebP, HEIC) veya video (MP4, MOV, AVI) kabul edilir.",
         },
         { status: 415 },
       );

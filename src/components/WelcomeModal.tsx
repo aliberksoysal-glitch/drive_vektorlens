@@ -24,7 +24,7 @@ const STEPS = [
     icon: "📸",
     title: "Çek veya Seç",
     description:
-      "Ekrandaki tek büyük mavi butona basarak ister kameranı aç, istersen de galeriden toplu fotoğraf seçerek saniyeler içinde Drive'a gönder.",
+      "Ekrandaki tek büyük mavi butona basarak ister kameranı aç, istersen de galeriden fotoğraf veya video seçerek saniyeler içinde Drive'a gönder.",
   },
 ] as const;
 
@@ -72,7 +72,7 @@ export function WelcomeModal({ open, onClose }: Props) {
             Vektör Lens&apos;e Hoş Geldiniz
           </h2>
           <p className="mt-2 text-sm text-blue-100">
-            Saha fotoğraflarınızı üç adımda Drive&apos;a aktarın.
+            Saha fotoğraf ve videolarınızı üç adımda Drive&apos;a aktarın.
           </p>
         </div>
 
