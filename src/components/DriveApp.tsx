@@ -1,12 +1,38 @@
 ﻿"use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { parseApiResponse } from "@/lib/api/parseResponse";
+import { compressImageForUpload } from "@/lib/client/compressImage";
+import {
+  enqueueOfflineUpload,
+  flushOfflineUploadQueue,
+  getOfflineQueueSize,
+} from "@/lib/client/offlineUploadQueue";
+import { isTransientNetworkError } from "@/lib/client/networkErrors";
+import {
+  buildPhotoUploadFileName,
+  getUploadFilenameTemplate,
+} from "@/lib/client/uploadFilename";
 import { DriveBrowser } from "@/components/DriveBrowser";
-import { DeleteItemButton } from "@/components/DeleteItemButton";
-import { NavigationBar } from "@/components/NavigationBar";
-import { buildVisitFolderName } from "@/lib/drive/folderNaming";
-
+import {
+  FieldUploadPanel,
+  UploadTargetBar,
+  VisitDatePicker,
+  type SubfolderOption,
+} from "@/components/FieldUploadUI";
+import { WelcomeModal } from "@/components/WelcomeModal";
+import {
+  isWelcomeDismissed,
+  setWelcomeDismissed,
+} from "@/lib/client/welcomeStorage";
+import { useToast } from "@/components/ui/Toast";
+import { useAudio } from "@/lib/hooks/useAudio";
+import {
+  formatVisitDate,
+  formatVisitDateFromInput,
+  getTodayDateInputValue,
+} from "@/lib/drive/folderNaming";
 type Business = { id: string; name: string };
 type UploadTarget = { id: string; name: string };
 
@@ -20,25 +46,31 @@ type ConnectionState =
     }
   | { status: "error"; message: string };
 
-type PendingPhoto = {
-  id: string;
-  file: File;
-  previewUrl: string;
-};
-
 type UploadState =
   | { status: "idle" }
-  | { status: "uploading"; current: number; total: number }
+  | { status: "uploading"; current: number; total: number; failed: UploadFailure[] }
   | { status: "success"; count: number }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string; failed: UploadFailure[] };
 
-const MAX_PHOTOS = 30;
+type UploadFailure = { id: string; name: string; error: string };
+
+class NetworkUploadError extends Error {
+  override name = "NetworkUploadError";
+  constructor(message = "Ağ bağlantısı kesildi.") {
+    super(message);
+  }
+}
+
+const MAX_PHOTOS = 100;
+/** Vercel timeout riskini azaltmak için paket başına yükleme adedi */
+const UPLOAD_CHUNK_SIZE = 10;
 
 type AppTab = "upload" | "browse";
 
 export function DriveApp() {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const { showToast } = useToast();
+  const { playSound } = useAudio();
 
   const [connection, setConnection] = useState<ConnectionState>({
     status: "loading",
@@ -46,11 +78,17 @@ export function DriveApp() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [filteredBusinesses, setFilteredBusinesses] = useState<Business[]>([]);
   const [selectedBusiness, setSelectedBusiness] = useState<Business | null>(null);
-  const [uploadFolder, setUploadFolder] = useState<UploadTarget | null>(null);
-  const [creatingVisitFolder, setCreatingVisitFolder] = useState(false);
-  const [visitFolderFeedback, setVisitFolderFeedback] = useState<string | null>(
-    null,
-  );
+  const [dateFolder, setDateFolder] = useState<UploadTarget | null>(null);
+  const [preparingTarget, setPreparingTarget] = useState(false);
+  const [targetError, setTargetError] = useState<string | null>(null);
+  const [childFolders, setChildFolders] = useState<SubfolderOption[]>([]);
+  const [loadingChildren, setLoadingChildren] = useState(false);
+  const [childrenError, setChildrenError] = useState<string | null>(null);
+  const [selectedSubfolder, setSelectedSubfolder] =
+    useState<SubfolderOption | null>(null);
+  const [selectedDate, setSelectedDate] = useState(getTodayDateInputValue);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [creatingChildFolder, setCreatingChildFolder] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [loadingBusinesses, setLoadingBusinesses] = useState(false);
   const [businessesError, setBusinessesError] = useState<string | null>(null);
@@ -59,13 +97,34 @@ export function DriveApp() {
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  const [selectedPhotos, setSelectedPhotos] = useState<PendingPhoto[]>([]);
   const [uploadState, setUploadState] = useState<UploadState>({ status: "idle" });
+  const [isUploading, setIsUploading] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [lastUploadCount, setLastUploadCount] = useState(0);
+  const [compressingPhotos, setCompressingPhotos] = useState(false);
+  const [offlineQueueCount, setOfflineQueueCount] = useState(0);
+  const [flushingOffline, setFlushingOffline] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [appTab, setAppTab] = useState<AppTab>("upload");
-  const [uploadNav, setUploadNav] = useState<{
-    stack: (Business | null)[];
-    index: number;
-  }>({ stack: [null], index: 0 });
+
+  useEffect(() => {
+    if (!isWelcomeDismissed()) {
+      setWelcomeOpen(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showSuccess) return;
+    const timer = window.setTimeout(() => setShowSuccess(false), 3000);
+    return () => clearTimeout(timer);
+  }, [showSuccess]);
+
+  function handleWelcomeClose(dismissPermanently: boolean) {
+    if (dismissPermanently) {
+      setWelcomeDismissed();
+    }
+    setWelcomeOpen(false);
+  }
 
   const loadBusinesses = useCallback(async () => {
     setLoadingBusinesses(true);
@@ -92,44 +151,160 @@ export function DriveApp() {
     }
   }, []);
 
+  const refreshOfflineCount = useCallback(async () => {
+    try {
+      const n = await getOfflineQueueSize();
+      setOfflineQueueCount(n);
+    } catch {
+      setOfflineQueueCount(0);
+    }
+  }, []);
+
   useEffect(() => {
-    async function connect() {
-      try {
-        const res = await fetch("/api/drive/health");
-        const { data, ok } = await parseApiResponse(res);
-        if (!ok || !data.ok) {
-          throw new Error(
-            typeof data.error === "string"
-              ? data.error
-              : "Drive bağlantısı kurulamadı.",
-          );
-        }
-        const rootFolder = data.rootFolder as
-          | { id?: string; name?: string }
-          | undefined;
-        if (!rootFolder?.id) {
-          throw new Error("Kök klasör bilgisi alınamadı.");
-        }
-        setConnection({
-          status: "connected",
-          rootFolderId: rootFolder.id,
-          rootFolderName: rootFolder.name ?? "İşletmeler",
-          email:
-            typeof data.accountEmail === "string" ? data.accountEmail : "",
-        });
-        await loadBusinesses();
-      } catch (err) {
-        setConnection({
-          status: "error",
-          message:
+    void refreshOfflineCount();
+  }, [refreshOfflineCount]);
+
+  useEffect(() => {
+    function onOnline() {
+      void refreshOfflineCount();
+    }
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [refreshOfflineCount]);
+
+  const loadConnection = useCallback(async () => {
+    setConnection({ status: "loading" });
+    try {
+      const res = await fetch("/api/drive/health");
+      const { data, ok } = await parseApiResponse(res);
+      if (!ok || !data.ok) {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error
+            : "Drive bağlantısı kurulamadı.",
+        );
+      }
+      const rootFolder = data.rootFolder as
+        | { id?: string; name?: string }
+        | undefined;
+      if (!rootFolder?.id) {
+        throw new Error("Kök klasör bilgisi alınamadı.");
+      }
+      setConnection({
+        status: "connected",
+        rootFolderId: rootFolder.id,
+        rootFolderName: rootFolder.name ?? "İşletmeler",
+        email:
+          typeof data.accountEmail === "string" ? data.accountEmail : "",
+      });
+      await loadBusinesses();
+    } catch (err) {
+      setConnection({
+        status: "error",
+        message:
+          err instanceof Error
+            ? err.message
+            : "Drive bağlantısı kurulamadı.",
+      });
+    }
+  }, [loadBusinesses]);
+
+  useEffect(() => {
+    void loadConnection();
+  }, [loadConnection]);
+
+  useEffect(() => {
+    if (!selectedBusiness) {
+      setDateFolder(null);
+      setTargetError(null);
+      setPreparingTarget(false);
+      return;
+    }
+
+    let cancelled = false;
+    setPreparingTarget(true);
+    setTargetError(null);
+    setDateFolder(null);
+    setSelectedSubfolder(null);
+    setChildFolders([]);
+
+    void resolveVisitFolder(selectedBusiness, selectedDate)
+      .then((folder) => {
+        if (!cancelled) setDateFolder(folder);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setTargetError(
             err instanceof Error
               ? err.message
-              : "Drive bağlantısı kurulamadı.",
-        });
+              : "Tarihli klasör hazırlanamadı.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPreparingTarget(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedBusiness?.id, selectedBusiness?.name, selectedDate]);
+
+  const loadChildFolders = useCallback(async (parentId: string) => {
+    setLoadingChildren(true);
+    setChildrenError(null);
+    try {
+      const res = await fetch(
+        `/api/drive/folders?parentFolderId=${encodeURIComponent(parentId)}`,
+      );
+      const { data, ok } = await parseApiResponse(res);
+      if (!ok || !data.ok) {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error
+            : "Alt klasörler yüklenemedi.",
+        );
       }
+      const list = (data.folders as SubfolderOption[]) ?? [];
+      setChildFolders(list);
+      setSelectedSubfolder((prev) => {
+        if (!prev) return prev;
+        return list.find((f) => f.id === prev.id) ?? null;
+      });
+    } catch (err) {
+      setChildrenError(
+        err instanceof Error ? err.message : "Alt klasörler yüklenemedi.",
+      );
+    } finally {
+      setLoadingChildren(false);
     }
-    connect();
-  }, [loadBusinesses]);
+  }, []);
+
+  useEffect(() => {
+    if (!dateFolder?.id) {
+      setChildFolders([]);
+      setChildrenError(null);
+      setSelectedSubfolder(null);
+      return;
+    }
+
+    const parentId = dateFolder.id;
+    void loadChildFolders(parentId);
+
+    const interval = window.setInterval(() => {
+      void loadChildFolders(parentId);
+    }, 20_000);
+
+    function onFocus() {
+      void loadChildFolders(parentId);
+    }
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [dateFolder?.id, loadChildFolders]);
 
   useEffect(() => {
     const queryLower = searchQuery.trim().toLowerCase();
@@ -142,71 +317,89 @@ export function DriveApp() {
     }
   }, [searchQuery, businesses]);
 
-  const photosRef = useRef(selectedPhotos);
-  photosRef.current = selectedPhotos;
-  useEffect(() => {
-    return () => {
-      photosRef.current.forEach((p) => URL.revokeObjectURL(p.previewUrl));
-    };
-  }, []);
-
-  function revokePhotos(photos: PendingPhoto[]) {
-    photos.forEach((p) => URL.revokeObjectURL(p.previewUrl));
-  }
-
-  function resetPhotoState() {
-    setSelectedPhotos((prev) => {
-      revokePhotos(prev);
-      return [];
-    });
-    setUploadState({ status: "idle" });
+  function resetFileInput() {
     if (fileInputRef.current) fileInputRef.current.value = "";
-    if (cameraInputRef.current) cameraInputRef.current.value = "";
   }
 
-  function addPhotosFromFileList(files: FileList | null) {
-    if (!files?.length) return;
-
-    const imageFiles = Array.from(files).filter((f) =>
-      f.type.startsWith("image/"),
-    );
-    if (!imageFiles.length) return;
-
-    setSelectedPhotos((prev) => {
-      const remaining = MAX_PHOTOS - prev.length;
-      if (remaining <= 0) {
-        alert(`En fazla ${MAX_PHOTOS} fotoğraf seçebilirsiniz.`);
-        return prev;
-      }
-
-      const toAdd = imageFiles.slice(0, remaining).map((file) => ({
-        id: `${file.name}-${file.size}-${Date.now()}-${Math.random()}`,
-        file,
-        previewUrl: URL.createObjectURL(file),
-      }));
-
-      if (imageFiles.length > remaining) {
-        alert(
-          `En fazla ${MAX_PHOTOS} fotoğraf. ${remaining} fotoğraf eklendi.`,
-        );
-      }
-
-      return [...prev, ...toAdd];
-    });
+  function resetUploadUi() {
     setUploadState({ status: "idle" });
+    resetFileInput();
   }
 
-  function handlePhotoCapture(e: React.ChangeEvent<HTMLInputElement>) {
-    addPhotosFromFileList(e.target.files);
-    e.target.value = "";
+  function isImageFile(file: File): boolean {
+    if (file.type.startsWith("image/")) return true;
+    return /\.(jpe?g|png|gif|webp|heic|heif|bmp)$/i.test(file.name);
   }
 
-  function removePhoto(id: string) {
-    setSelectedPhotos((prev) => {
-      const photo = prev.find((p) => p.id === id);
-      if (photo) URL.revokeObjectURL(photo.previewUrl);
-      return prev.filter((p) => p.id !== id);
-    });
+  function canStartUpload(): boolean {
+    if (!selectedBusiness) {
+      showToast({ message: "Önce bir işletme seçin.", variant: "error" });
+      return false;
+    }
+    if (preparingTarget || !dateFolder?.id) {
+      showToast({
+        message: "Hedef klasör hazırlanıyor, lütfen birkaç saniye bekleyin.",
+        variant: "info",
+      });
+      return false;
+    }
+    if (targetError) {
+      showToast({ message: targetError, variant: "error" });
+      return false;
+    }
+    return true;
+  }
+
+  async function handleFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = e.target.files;
+    if (!picked?.length) return;
+    if (!canStartUpload()) {
+      e.target.value = "";
+      return;
+    }
+
+    let imageFiles = Array.from(picked).filter(isImageFile);
+    if (!imageFiles.length) {
+      showToast({
+        message: "Geçerli fotoğraf bulunamadı.",
+        variant: "error",
+      });
+      e.target.value = "";
+      return;
+    }
+
+    if (imageFiles.length > MAX_PHOTOS) {
+      showToast({
+        message: `En fazla ${MAX_PHOTOS} fotoğraf. İlk ${MAX_PHOTOS} dosya yüklenecek.`,
+        variant: "info",
+      });
+      imageFiles = imageFiles.slice(0, MAX_PHOTOS);
+    }
+
+    const heicHint = imageFiles.some(
+      (f) =>
+        /^image\/(heic|heif)/i.test(f.type) ||
+        /\.(heic|heif)$/i.test(f.name),
+    );
+    if (heicHint) {
+      showToast({
+        message:
+          "HEIC/HEIF bazı tarayıcılarda sıkıştırılamaz; yükleme başarısız olabilir.",
+        variant: "info",
+      });
+    }
+
+    try {
+      await performUpload(imageFiles);
+    } catch (err) {
+      showToast({
+        message:
+          err instanceof Error ? err.message : "Yükleme başlatılamadı.",
+        variant: "error",
+      });
+    } finally {
+      e.target.value = "";
+    }
   }
 
   function openAddBusinessModal() {
@@ -224,62 +417,26 @@ export function DriveApp() {
 
   function clearBusinessSelection() {
     setSelectedBusiness(null);
-    setUploadFolder(null);
-    setVisitFolderFeedback(null);
-    resetPhotoState();
-    setUploadNav({ stack: [null], index: 0 });
+    setDateFolder(null);
+    setTargetError(null);
+    setSelectedSubfolder(null);
+    setNewFolderName("");
+    setChildFolders([]);
+    setSelectedDate(getTodayDateInputValue());
+    resetUploadUi();
   }
 
-  const uploadCanGoBack = uploadNav.index > 0;
-  const uploadCanGoForward = uploadNav.index < uploadNav.stack.length - 1;
-
-  function goBackUpload() {
-    if (!uploadCanGoBack) return;
-    const nextIndex = uploadNav.index - 1;
-    const target = uploadNav.stack[nextIndex];
-    setUploadNav((prev) => ({ ...prev, index: nextIndex }));
-    if (target) {
-      setSelectedBusiness(target);
-      setUploadFolder(null);
-      setVisitFolderFeedback(null);
-      resetPhotoState();
-    } else {
-      setSelectedBusiness(null);
-      setUploadFolder(null);
-      setVisitFolderFeedback(null);
-      resetPhotoState();
-    }
-  }
-
-  function goForwardUpload() {
-    if (!uploadCanGoForward) return;
-    const nextIndex = uploadNav.index + 1;
-    const target = uploadNav.stack[nextIndex];
-    setUploadNav((prev) => ({ ...prev, index: nextIndex }));
-    if (target) {
-      setSelectedBusiness(target);
-      setUploadFolder(null);
-      setVisitFolderFeedback(null);
-      resetPhotoState();
-    }
-  }
-
-  function cancelUploadFlow() {
-    if (uploadState.status === "uploading") return;
-    if (selectedPhotos.length > 0) {
-      resetPhotoState();
-      return;
-    }
-    clearBusinessSelection();
-  }
-
-  async function resolveVisitFolder(business: Business): Promise<UploadTarget> {
+  async function resolveVisitFolder(
+    business: Business,
+    visitDateIso: string,
+  ): Promise<UploadTarget> {
     const res = await fetch("/api/drive/visit-folder", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         businessFolderId: business.id,
         businessName: business.name,
+        visitDate: visitDateIso,
       }),
     });
     const { data, ok } = await parseApiResponse(res);
@@ -294,51 +451,67 @@ export function DriveApp() {
     return folder;
   }
 
-  function handleSelectBusiness(business: Business) {
-    setUploadNav((prev) => {
-      const truncated = prev.stack.slice(0, prev.index + 1);
-      const next = [...truncated, business];
-      return { stack: next, index: next.length - 1 };
-    });
-    setSelectedBusiness(business);
-    setUploadFolder(null);
-    setVisitFolderFeedback(null);
-    setSearchQuery("");
-    resetPhotoState();
+  function getUploadTarget(): UploadTarget {
+    if (!dateFolder?.id) {
+      throw new Error("Tarih klasörü henüz hazır değil.");
+    }
+    if (selectedSubfolder) {
+      return selectedSubfolder;
+    }
+    return dateFolder;
   }
 
-  async function handleCreateVisitFolder() {
-    if (!selectedBusiness) return;
+  async function handleCreateChildFolder() {
+    if (!dateFolder?.id) return;
+    const name = newFolderName.trim();
+    if (!name) {
+      showToast({ message: "Alan adı gerekli.", variant: "error" });
+      return;
+    }
 
-    setCreatingVisitFolder(true);
-    setVisitFolderFeedback(null);
+    setCreatingChildFolder(true);
     try {
-      const folder = await resolveVisitFolder(selectedBusiness);
-      setUploadFolder(folder);
-      setVisitFolderFeedback(
-        `Klasör hazır: ${folder.name}`,
-      );
+      const res = await fetch("/api/drive/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parentFolderId: dateFolder.id, name }),
+      });
+      const { data, ok } = await parseApiResponse(res);
+      const folder = data.folder as SubfolderOption | undefined;
+      if (!ok || !data.ok || !folder?.id) {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error
+            : "Klasör oluşturulamadı.",
+        );
+      }
+      setNewFolderName("");
+      setSelectedSubfolder(folder);
+      await loadChildFolders(dateFolder.id);
+      showToast({
+        message: data.created
+          ? `"${folder.name}" oluşturuldu ve seçildi.`
+          : `"${folder.name}" seçildi.`,
+        variant: "success",
+      });
     } catch (err) {
-      setVisitFolderFeedback(
-        err instanceof Error
-          ? err.message
-          : "Klasör oluşturulamadı.",
-      );
+      showToast({
+        message:
+          err instanceof Error ? err.message : "Klasör oluşturulamadı.",
+        variant: "error",
+      });
     } finally {
-      setCreatingVisitFolder(false);
+      setCreatingChildFolder(false);
     }
   }
 
-  function handleDeleteBusiness(business: Business) {
-    if (selectedBusiness?.id === business.id) {
-      clearBusinessSelection();
-    }
-    void loadBusinesses();
-  }
-
-  function handleVisitFolderDeleted() {
-    setUploadFolder(null);
-    setVisitFolderFeedback(null);
+  function handleSelectBusiness(business: Business) {
+    setSelectedBusiness(business);
+    setSelectedSubfolder(null);
+    setNewFolderName("");
+    setChildFolders([]);
+    setSearchQuery("");
+    resetUploadUi();
   }
 
   async function handleCreateBusinessFromModal(e?: React.FormEvent) {
@@ -359,7 +532,6 @@ export function DriveApp() {
       });
       const { data, ok } = await parseApiResponse(res);
       const folder = data.folder as Business | undefined;
-      const visitFolder = data.visitFolder as UploadTarget | undefined;
       if (!ok || !data.ok) {
         throw new Error(
           typeof data.error === "string"
@@ -367,21 +539,14 @@ export function DriveApp() {
             : "Klasör oluşturulamadı.",
         );
       }
-      if (!folder?.id || !visitFolder?.id) {
-        throw new Error("Ziyaret klasörü oluşturulamadı.");
+      if (!folder?.id) {
+        throw new Error("İşletme klasörü oluşturulamadı.");
       }
       setIsAddModalOpen(false);
       setNewBusinessName("");
-      setUploadNav((prev) => {
-        const truncated = prev.stack.slice(0, prev.index + 1);
-        const next = [...truncated, folder];
-        return { stack: next, index: next.length - 1 };
-      });
       setSelectedBusiness(folder);
-      setUploadFolder(visitFolder);
-      setVisitFolderFeedback(`Klasör hazır: ${visitFolder.name}`);
       setSearchQuery("");
-      resetPhotoState();
+      resetUploadUi();
       await loadBusinesses();
     } catch (err) {
       setCreateError(
@@ -392,15 +557,28 @@ export function DriveApp() {
     }
   }
 
-  async function uploadSinglePhoto(file: File, folderId: string) {
+  async function uploadSinglePhoto(
+    file: File,
+    folderId: string,
+    uploadName?: string,
+  ) {
     const formData = new FormData();
     formData.append("folderId", folderId);
-    formData.append("file", file, file.name);
+    const name = (uploadName ?? file.name).trim() || file.name;
+    formData.append("file", file, name);
 
-    const res = await fetch("/api/drive/upload", {
-      method: "POST",
-      body: formData,
-    });
+    let res: Response;
+    try {
+      res = await fetch("/api/drive/upload", {
+        method: "POST",
+        body: formData,
+      });
+    } catch (err) {
+      if (typeof navigator !== "undefined" && isTransientNetworkError(err)) {
+        throw new NetworkUploadError();
+      }
+      throw err;
+    }
 
     const { data, ok } = await parseApiResponse(res);
     if (!ok || !data.ok) {
@@ -410,76 +588,297 @@ export function DriveApp() {
           : `${file.name} yüklenemedi.`,
       );
     }
+    return data;
   }
 
-  async function handleUploadToDrive() {
-    if (!selectedPhotos.length || !uploadFolder) return;
+  async function handleFlushOfflineQueue() {
+    setFlushingOffline(true);
+    try {
+      const { uploaded, failed } = await flushOfflineUploadQueue(
+        async (row) => {
+          const file = new File([row.blob], row.fileName, {
+            type: row.mimeType,
+          });
+          await uploadSinglePhoto(file, row.folderId, row.fileName);
+        },
+      );
+      await refreshOfflineCount();
+      if (uploaded > 0) {
+        showToast({
+          message:
+            `Başarıyla tamamlandı.\n\n` +
+            `${uploaded} adet bekleyen fotoğraf Google Drive'a yüklenmiştir.`,
+          variant: "success",
+        });
+      }
+      if (failed > 0) {
+        showToast({
+          message: `${failed} kuyruk öğesi yüklenemedi; kayıtlar korundu.`,
+          variant: "error",
+        });
+      }
+      if (uploaded === 0 && failed === 0) {
+        showToast({
+          message: "Kuyrukta bekleyen fotoğraf yok.",
+          variant: "info",
+        });
+      }
+    } catch (err) {
+      showToast({
+        message:
+          err instanceof Error ? err.message : "Kuyruk işlenemedi.",
+        variant: "error",
+      });
+    } finally {
+      setFlushingOffline(false);
+    }
+  }
 
-    const total = selectedPhotos.length;
-    setUploadState({ status: "uploading", current: 0, total });
-
-    let uploaded = 0;
-    const failed: string[] = [];
-
-    for (let i = 0; i < selectedPhotos.length; i++) {
-      const photo = selectedPhotos[i];
-      setUploadState({ status: "uploading", current: i + 1, total });
-
+  async function recordUploadFailure(
+    reason: unknown,
+    photo: { id: string; file: File },
+    uploadTarget: UploadTarget,
+    uploadName: string,
+    failed: UploadFailure[],
+  ) {
+    if (reason instanceof NetworkUploadError) {
       try {
-        await uploadSinglePhoto(photo.file, uploadFolder.id);
-        uploaded++;
-      } catch (err) {
-        failed.push(
-          err instanceof Error ? err.message : photo.file.name,
-        );
+        await enqueueOfflineUpload({
+          folderId: uploadTarget.id,
+          fileName: uploadName,
+          mimeType: photo.file.type || "image/jpeg",
+          blob: await photo.file.arrayBuffer(),
+        });
+        await refreshOfflineCount();
+        failed.push({
+          id: photo.id,
+          name: photo.file.name,
+          error: "Çevrimdışı kuyruğa alındı",
+        });
+        return;
+      } catch {
+        /* fall through */
       }
     }
+    failed.push({
+      id: photo.id,
+      name: photo.file.name,
+      error:
+        reason instanceof Error ? reason.message : "Yükleme başarısız",
+    });
+  }
 
-    if (uploaded === total) {
-      setUploadState({ status: "success", count: uploaded });
-      setTimeout(() => resetPhotoState(), 2000);
-    } else if (uploaded > 0) {
+  async function performUpload(
+    files: File[],
+    opts?: { manageOverlay?: boolean; skipCompression?: boolean },
+  ) {
+    if (!files.length || !selectedBusiness) return;
+
+    const manageOverlay = opts?.manageOverlay !== false;
+    const skipCompression = opts?.skipCompression === true;
+
+    let uploadTarget: UploadTarget;
+    try {
+      uploadTarget = getUploadTarget();
+    } catch (err) {
+      showToast({
+        message:
+          err instanceof Error
+            ? err.message
+            : "Yükleme hedefi hazırlanamadı.",
+        variant: "error",
+      });
+      return;
+    }
+
+    if (manageOverlay) {
+      setIsUploading(true);
+      setShowSuccess(false);
+    }
+
+    const total = files.length;
+    const failed: UploadFailure[] = [];
+    let uploaded = 0;
+    const template = getUploadFilenameTemplate();
+    const visitLabel = uploadTarget.name;
+    const runId = Date.now();
+
+    setUploadState({ status: "uploading", current: 0, total, failed });
+
+    try {
+      for (let chunkStart = 0; chunkStart < files.length; chunkStart += UPLOAD_CHUNK_SIZE) {
+        const chunkRaw = files.slice(chunkStart, chunkStart + UPLOAD_CHUNK_SIZE);
+
+        let chunkFiles: File[];
+        if (skipCompression) {
+          chunkFiles = chunkRaw;
+        } else {
+          setCompressingPhotos(true);
+          try {
+            chunkFiles = await Promise.all(
+              chunkRaw.map((f) => compressImageForUpload(f)),
+            );
+          } finally {
+            setCompressingPhotos(false);
+          }
+        }
+
+        for (let j = 0; j < chunkFiles.length; j++) {
+          const globalIdx = chunkStart + j + 1;
+          const file = chunkFiles[j];
+          const photo = {
+            id: `upload-${runId}-${globalIdx}`,
+            file,
+          };
+          const uploadName = buildPhotoUploadFileName(template, {
+            business: selectedBusiness.name,
+            visit: visitLabel,
+            index: globalIdx,
+            originalName: file.name,
+          });
+
+          try {
+            await uploadSinglePhoto(file, uploadTarget.id, uploadName);
+            uploaded++;
+          } catch (reason) {
+            await recordUploadFailure(
+              reason,
+              photo,
+              uploadTarget,
+              uploadName,
+              failed,
+            );
+          }
+
+          setUploadState({
+            status: "uploading",
+            current: uploaded,
+            total,
+            failed,
+          });
+        }
+      }
+
+      if (failed.length === 0) {
+        setUploadState({ status: "success", count: uploaded });
+        setLastUploadCount(uploaded);
+        setShowSuccess(true);
+        playSound("success");
+        resetUploadUi();
+        return;
+      }
+
       setUploadState({
         status: "error",
-        message: `${uploaded}/${total} yüklendi. Hatalar: ${failed.join("; ")}`,
+        message:
+          `${uploaded} / ${total} adet fotoğraf Google Drive'a yüklenmiştir.\n\n` +
+          `${failed.length} adet yüklenemedi veya çevrimdışı kuyruğa alındı.`,
+        failed,
       });
-    } else {
-      setUploadState({
-        status: "error",
-        message: failed[0] ?? "Yükleme başarısız.",
+      showToast({
+        message:
+          `Dikkat: ${failed.length} adet fotoğraf yüklenemedi.\n\n` +
+          `${uploaded} / ${total} adet fotoğraf aktarılmıştır.`,
+        variant: "error",
       });
+      playSound("error");
+    } finally {
+      if (manageOverlay) {
+        setIsUploading(false);
+        resetFileInput();
+      }
     }
   }
+
+  const visitDateLabel =
+    formatVisitDateFromInput(selectedDate) ?? formatVisitDate();
+  const destinationLabel =
+    selectedSubfolder?.name ?? "Tarih klasörü";
+  const targetPreview = selectedBusiness
+    ? `${selectedBusiness.name} > ${visitDateLabel} > ${destinationLabel}`
+    : visitDateLabel;
+  const targetReady = !!dateFolder && !preparingTarget && !targetError;
+  const uploadBusy = isUploading || compressingPhotos;
 
   if (connection.status === "loading") {
     return (
-      <div className="surface-card flex flex-col items-center justify-center px-6 py-16">
-        <Spinner />
-        <p className="mt-4 text-base font-medium text-slate-900">
-          Google Drive&apos;a bağlanılıyor
-        </p>
-        <p className="mt-1 text-sm text-slate-600">Lütfen bekleyin…</p>
-      </div>
+      <>
+        <div className="surface-card flex flex-col items-center justify-center px-6 py-16">
+          <Spinner />
+          <p className="mt-4 text-base font-medium text-slate-900">
+            Google Drive&apos;a bağlanılıyor
+          </p>
+          <p className="mt-1 text-sm text-slate-600">Lütfen bekleyin…</p>
+        </div>
+        <WelcomeModal open={welcomeOpen} onClose={handleWelcomeClose} />
+      </>
     );
   }
 
   if (connection.status === "error") {
+    const needsUnlock =
+      connection.message.toLowerCase().includes("yetkisiz") ||
+      connection.message.toLowerCase().includes("unauthorized");
     return (
-      <div className="rounded-2xl border border-red-200 bg-white p-6 text-center shadow-sm">
-        <p className="mb-2 text-lg font-semibold text-red-600">Bağlantı hatası</p>
-        <p className="text-sm text-slate-600">{connection.message}</p>
-      </div>
+      <>
+        <div className="surface-card p-6 text-center">
+        <p className="text-lg font-semibold text-red-600">Drive bağlantısı yok</p>
+        <p className="mt-2 text-sm text-slate-600">{connection.message}</p>
+        <p className="mt-3 text-xs text-slate-500">
+          OAuth veya ağ sorunu olabilir. Sorun sürerse yöneticinize bildirin.
+        </p>
+        {needsUnlock && (
+          <p className="mt-4">
+            <Link
+              href="/unlock"
+              className="text-sm font-semibold text-blue-800 underline"
+            >
+              Uygulama kilidini aç →
+            </Link>
+          </p>
+        )}
+        <button
+          type="button"
+          onClick={() => void loadConnection()}
+          className="btn-primary mt-5"
+        >
+          Bağlantıyı yeniden dene
+        </button>
+        </div>
+        <WelcomeModal open={welcomeOpen} onClose={handleWelcomeClose} />
+      </>
     );
   }
 
   return (
     <div className="space-y-5">
-      <div className="segment-track">
+      {offlineQueueCount > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span>
+              <span className="font-semibold">{offlineQueueCount}</span> fotoğraf
+              çevrimdışı kuyrukta bekliyor.
+            </span>
+            <button
+              type="button"
+              disabled={flushingOffline}
+              onClick={() => void handleFlushOfflineQueue()}
+              className="shrink-0 rounded-lg bg-amber-900 px-3 py-1.5 text-xs font-semibold text-white transition-opacity hover:opacity-95 disabled:opacity-50"
+            >
+              {flushingOffline ? "Yükleniyor…" : "Şimdi yükle"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex rounded-2xl border border-slate-200 bg-slate-100 p-1">
         <button
           type="button"
           onClick={() => setAppTab("upload")}
-          className={`segment-tab ${
-            appTab === "upload" ? "segment-tab--active" : "segment-tab--inactive"
+          className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition-all ${
+            appTab === "upload"
+              ? "bg-white text-blue-900 shadow-sm"
+              : "text-slate-600 hover:text-slate-800"
           }`}
         >
           Yükle
@@ -487,8 +886,10 @@ export function DriveApp() {
         <button
           type="button"
           onClick={() => setAppTab("browse")}
-          className={`segment-tab ${
-            appTab === "browse" ? "segment-tab--active" : "segment-tab--inactive"
+          className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition-all ${
+            appTab === "browse"
+              ? "bg-white text-blue-900 shadow-sm"
+              : "text-slate-600 hover:text-slate-800"
           }`}
         >
           Drive&apos;da Gör
@@ -509,9 +910,9 @@ export function DriveApp() {
             loadingBusinesses={loadingBusinesses}
             businessesError={businessesError}
             onRetryBusinesses={loadBusinesses}
+            onRefreshBusinesses={loadBusinesses}
             filteredBusinesses={filteredBusinesses}
             onSelectBusiness={handleSelectBusiness}
-            onDeleteBusiness={handleDeleteBusiness}
             onOpenAddModal={openAddBusinessModal}
           />
           <AddBusinessModal
@@ -526,50 +927,134 @@ export function DriveApp() {
         </>
       ) : (
         <>
-          <NavigationBar
-            canGoBack={uploadCanGoBack}
-            canGoForward={uploadCanGoForward}
-            onBack={goBackUpload}
-            onForward={goForwardUpload}
-            onCancel={cancelUploadFlow}
-            cancelDisabled={uploadState.status === "uploading"}
-            cancelLabel={
-              selectedPhotos.length > 0 ? "Temizle" : "İptal"
-            }
+          <button
+            type="button"
+            onClick={clearBusinessSelection}
+            disabled={isUploading}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50"
+          >
+            ← İşletmeler
+          </button>
+
+          <VisitDatePicker
+            value={selectedDate}
+            onChange={setSelectedDate}
+            disabled={uploadBusy || preparingTarget}
+            targetPreview={targetPreview}
           />
 
-          <SelectedBusinessBanner
-            business={selectedBusiness}
-            visitFolder={uploadFolder}
-            onChange={clearBusinessSelection}
-            onVisitFolderDeleted={handleVisitFolderDeleted}
-            onBusinessDeleted={() => {
-              clearBusinessSelection();
-              loadBusinesses();
+          <UploadTargetBar
+            businessName={selectedBusiness.name}
+            visitDateLabel={visitDateLabel}
+            destinationLabel={destinationLabel}
+            preparing={preparingTarget}
+            ready={targetReady}
+            error={targetError}
+            childFolders={childFolders}
+            loadingChildren={loadingChildren}
+            childrenError={childrenError}
+            selectedSubfolderId={selectedSubfolder?.id ?? null}
+            onSelectSubfolder={setSelectedSubfolder}
+            newFolderName={newFolderName}
+            onNewFolderNameChange={setNewFolderName}
+            onCreateFolder={() => void handleCreateChildFolder()}
+            creatingFolder={creatingChildFolder}
+            disabled={uploadBusy}
+            onRefreshChildren={() => {
+              if (dateFolder?.id) void loadChildFolders(dateFolder.id);
             }}
           />
 
-          <PhotoCaptureSection
+          {showSuccess && (
+            <UploadSuccessBanner count={lastUploadCount} />
+          )}
+
+          <FieldUploadPanel
             fileInputRef={fileInputRef}
-            cameraInputRef={cameraInputRef}
-            photos={selectedPhotos}
             uploadState={uploadState}
-            uploadReady={!!uploadFolder && !creatingVisitFolder}
-            plannedFolderName={buildVisitFolderName(selectedBusiness.name)}
-            visitFolder={uploadFolder}
-            creatingVisitFolder={creatingVisitFolder}
-            visitFolderFeedback={visitFolderFeedback}
-            onCreateVisitFolder={handleCreateVisitFolder}
-            onCapture={handlePhotoCapture}
-            onSelectMultiple={() => fileInputRef.current?.click()}
-            onTakePhoto={() => cameraInputRef.current?.click()}
-            onUpload={handleUploadToDrive}
-            onClearAll={resetPhotoState}
-            onRemovePhoto={removePhoto}
-            onAddMore={() => fileInputRef.current?.click()}
+            targetReady={targetReady}
+            uploadBusy={uploadBusy}
+            onFileChange={(e) => void handleFileInputChange(e)}
+            onPickPhotos={() => fileInputRef.current?.click()}
           />
         </>
       )}
+
+
+
+
+      {uploadBusy && (
+        <UploadLoadingOverlay
+          uploaded={
+            uploadState.status === "uploading" ? uploadState.current : 0
+          }
+          total={
+            uploadState.status === "uploading"
+              ? uploadState.total
+              : uploadState.status === "success"
+                ? uploadState.count
+                : 0
+          }
+          compressing={compressingPhotos}
+        />
+      )}
+
+      <WelcomeModal open={welcomeOpen} onClose={handleWelcomeClose} />
+    </div>
+  );
+}
+
+function UploadLoadingOverlay({
+  uploaded,
+  total,
+  compressing,
+}: {
+  uploaded: number;
+  total: number;
+  compressing: boolean;
+}) {
+  const label =
+    compressing && uploaded === 0
+      ? "Fotoğraflar hazırlanıyor…"
+      : total > 0
+        ? `Fotoğraflar yükleniyor... (${uploaded} / ${total})`
+        : "Fotoğraflar yükleniyor...";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/50 backdrop-blur-md"
+      role="alertdialog"
+      aria-modal="true"
+      aria-busy="true"
+      aria-live="polite"
+      aria-label={label}
+    >
+      <Spinner size="lg" />
+      <p className="mt-5 max-w-xs px-6 text-center text-base font-semibold text-white">
+        {label}
+      </p>
+    </div>
+  );
+}
+
+function UploadSuccessBanner({ count }: { count?: number }) {
+  return (
+    <div
+      className="fixed left-4 right-4 top-4 z-[60] mx-auto flex max-w-md items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3.5 text-emerald-900 shadow-lg shadow-emerald-900/10 ring-1 ring-emerald-200"
+      role="status"
+      aria-live="polite"
+    >
+      <span className="text-xl" aria-hidden>
+        ✅
+      </span>
+      <div>
+        <p className="text-sm font-bold">Başarıyla Yüklendi</p>
+        {count != null && count > 0 && (
+          <p className="text-xs font-medium text-emerald-800">
+            {count} fotoğraf Google Drive&apos;a aktarıldı
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -581,9 +1066,9 @@ function BusinessPicker({
   loadingBusinesses,
   businessesError,
   onRetryBusinesses,
+  onRefreshBusinesses,
   filteredBusinesses,
   onSelectBusiness,
-  onDeleteBusiness,
   onOpenAddModal,
 }: {
   connection: Extract<ConnectionState, { status: "connected" }>;
@@ -592,11 +1077,19 @@ function BusinessPicker({
   loadingBusinesses: boolean;
   businessesError: string | null;
   onRetryBusinesses: () => void;
+  onRefreshBusinesses: () => void;
   filteredBusinesses: Business[];
   onSelectBusiness: (b: Business) => void;
-  onDeleteBusiness: (b: Business) => void;
   onOpenAddModal: () => void;
 }) {
+  const [sortOrder, setSortOrder] = useState<"az" | "za" | "new">("az");
+
+  const sortedBusinesses = [...filteredBusinesses].sort((a, b) => {
+    if (sortOrder === "az") return a.name.localeCompare(b.name);
+    if (sortOrder === "za") return b.name.localeCompare(a.name);
+    return 0;
+  });
+
   return (
     <div className="surface-card p-5">
       <div className="mb-4 border-b border-slate-100 pb-4">
@@ -612,9 +1105,19 @@ function BusinessPicker({
             Bağlı
           </span>
         </div>
-        <p className="mt-2 truncate text-xs text-slate-500">
-          {connection.rootFolderName}
-        </p>
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <p className="min-w-0 flex-1 truncate text-xs text-slate-500">
+            {connection.rootFolderName}
+          </p>
+          <button
+            type="button"
+            onClick={() => void onRefreshBusinesses()}
+            disabled={loadingBusinesses}
+            className="shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-50"
+          >
+            Listeyi yenile
+          </button>
+        </div>
       </div>
 
       <div className="relative">
@@ -626,6 +1129,32 @@ function BusinessPicker({
           placeholder="İşletme ara..."
           className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-3.5 pl-12 pr-4 text-base text-slate-900 placeholder:text-slate-400 outline-none transition-all focus:border-blue-800 focus:bg-white focus:ring-2 focus:ring-blue-800/15"
         />
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium text-slate-500">Sırala:</span>
+        <button
+          type="button"
+          onClick={() => setSortOrder("az")}
+          className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+            sortOrder === "az"
+              ? "bg-blue-800 text-white"
+              : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+          }`}
+        >
+          A → Z
+        </button>
+        <button
+          type="button"
+          onClick={() => setSortOrder("za")}
+          className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+            sortOrder === "za"
+              ? "bg-blue-800 text-white"
+              : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+          }`}
+        >
+          Z → A
+        </button>
       </div>
 
       <button
@@ -640,6 +1169,17 @@ function BusinessPicker({
       {businessesError ? (
         <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-4 text-center">
           <p className="text-sm font-medium text-red-700">{businessesError}</p>
+          {(businessesError.toLowerCase().includes("yetkisiz") ||
+            businessesError.toLowerCase().includes("unauthorized")) && (
+            <p className="mt-2">
+              <Link
+                href="/unlock"
+                className="text-sm font-semibold text-blue-800 underline"
+              >
+                Uygulama kilidini aç →
+              </Link>
+            </p>
+          )}
           <button
             type="button"
             onClick={onRetryBusinesses}
@@ -653,7 +1193,7 @@ function BusinessPicker({
           <Spinner />
         </div>
       ) : (
-        <div className="mt-4 overflow-hidden rounded-2xl border border-slate-100 bg-slate-50/50">
+        <div className="mt-4 overflow-hidden rounded-xl border border-slate-100 bg-slate-50/50">
           {filteredBusinesses.length === 0 ? (
             <div className="px-4 py-10 text-center">
               <p className="text-sm font-medium text-slate-900">
@@ -666,32 +1206,26 @@ function BusinessPicker({
               </p>
             </div>
           ) : (
-            <ul className="max-h-72 divide-y divide-slate-100 overflow-y-auto">
-              {filteredBusinesses.map((business) => (
-                <li key={business.id} className="flex items-center">
+            <ul className="scroll-panel divide-y divide-slate-100 bg-white">
+              {sortedBusinesses.map((business) => (
+                <li key={business.id}>
                   <button
                     type="button"
                     onClick={() => onSelectBusiness(business)}
-                    className="group flex min-w-0 flex-1 items-center justify-between gap-3 px-4 py-4 text-left transition-all hover:bg-white active:scale-[0.995]"
+                    className="group flex w-full min-w-0 items-center justify-between gap-3 px-4 py-4 text-left transition-all hover:bg-blue-50/60 active:scale-[0.995]"
                   >
                     <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-slate-800 group-hover:text-blue-900">
                       {business.name}
                     </span>
                     <ChevronIcon className="h-5 w-5 shrink-0 text-slate-300 group-hover:text-blue-700" />
                   </button>
-                  <DeleteItemButton
-                    itemId={business.id}
-                    itemName={business.name}
-                    itemKind="işletme"
-                    onDeleted={() => onDeleteBusiness(business)}
-                    className="mr-2"
-                  />
                 </li>
               ))}
             </ul>
           )}
         </div>
       )}
+
     </div>
   );
 }
@@ -814,311 +1348,6 @@ function AddBusinessModal({
   );
 }
 
-function SelectedBusinessBanner({
-  business,
-  visitFolder,
-  onChange,
-  onVisitFolderDeleted,
-  onBusinessDeleted,
-}: {
-  business: Business;
-  visitFolder: UploadTarget | null;
-  onChange: () => void;
-  onVisitFolderDeleted: () => void;
-  onBusinessDeleted: () => void;
-}) {
-  return (
-    <div className="surface-card p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-medium uppercase tracking-wide text-blue-700">
-            Seçilen işletme
-          </p>
-          <div className="mt-0.5 flex items-center gap-1">
-            <p className="min-w-0 flex-1 truncate text-lg font-semibold text-slate-900">
-              {business.name}
-            </p>
-            <DeleteItemButton
-              itemId={business.id}
-              itemName={business.name}
-              itemKind="işletme"
-              onDeleted={onBusinessDeleted}
-            />
-          </div>
-          {visitFolder ? (
-            <div className="mt-1 flex items-center gap-1">
-              <p className="min-w-0 flex-1 truncate text-sm text-slate-600">
-                Bugünkü klasör:{" "}
-                <span className="font-medium text-slate-800">
-                  {visitFolder.name}
-                </span>
-              </p>
-              <DeleteItemButton
-                itemId={visitFolder.id}
-                itemName={visitFolder.name}
-                itemKind="klasör"
-                onDeleted={onVisitFolderDeleted}
-              />
-            </div>
-          ) : (
-            <p className="mt-1 text-sm text-slate-500">
-              Aşağıdan tarihli klasör oluşturun
-            </p>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={onChange}
-          className="shrink-0 rounded-xl border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-blue-900 transition-all hover:bg-blue-50 active:scale-[0.98]"
-        >
-          Değiştir
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PhotoCaptureSection({
-  fileInputRef,
-  cameraInputRef,
-  photos,
-  uploadState,
-  uploadReady,
-  plannedFolderName,
-  visitFolder,
-  creatingVisitFolder,
-  visitFolderFeedback,
-  onCreateVisitFolder,
-  onCapture,
-  onSelectMultiple,
-  onTakePhoto,
-  onUpload,
-  onClearAll,
-  onRemovePhoto,
-  onAddMore,
-}: {
-  fileInputRef: React.RefObject<HTMLInputElement | null>;
-  cameraInputRef: React.RefObject<HTMLInputElement | null>;
-  photos: PendingPhoto[];
-  uploadState: UploadState;
-  uploadReady: boolean;
-  plannedFolderName: string;
-  visitFolder: UploadTarget | null;
-  creatingVisitFolder: boolean;
-  visitFolderFeedback: string | null;
-  onCreateVisitFolder: () => void;
-  onCapture: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onSelectMultiple: () => void;
-  onTakePhoto: () => void;
-  onUpload: () => void;
-  onClearAll: () => void;
-  onRemovePhoto: (id: string) => void;
-  onAddMore: () => void;
-}) {
-  const isUploading = uploadState.status === "uploading";
-  const isSuccess = uploadState.status === "success";
-  const isError = uploadState.status === "error";
-  const hasPhotos = photos.length > 0;
-  const folderReady = !!visitFolder;
-
-  return (
-    <section className="surface-card p-5">
-      <div className="mb-4 border-b border-slate-100 pb-4">
-        <h2 className="text-lg font-semibold text-slate-900">Fotoğraf yükleme</h2>
-        <p className="mt-0.5 text-sm text-slate-600">
-          Saha kayıtlarını Drive&apos;a aktarın
-        </p>
-      </div>
-
-      <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 p-4">
-        <p className="text-xs font-medium text-slate-600">
-          Adım 1 · Klasör
-        </p>
-        <p className="mt-1 truncate text-sm font-medium text-slate-800">
-          {plannedFolderName}
-        </p>
-        <p className="mt-0.5 text-xs text-slate-600">
-          Bugünün tarihi ve işletme adıyla otomatik oluşturulur
-        </p>
-        <button
-          type="button"
-          onClick={onCreateVisitFolder}
-          disabled={creatingVisitFolder || isUploading || folderReady}
-          className="btn-primary mt-3 w-full disabled:cursor-not-allowed disabled:opacity-55"
-        >
-          {creatingVisitFolder ? (
-            <>
-              <Spinner size="sm" />
-              Klasör oluşturuluyor…
-            </>
-          ) : folderReady ? (
-            <>
-              <CheckIcon />
-              Klasör hazır
-            </>
-          ) : (
-            <>
-              <FolderPlusIcon className="h-5 w-5" />
-              Tarihli Klasör Oluştur
-            </>
-          )}
-        </button>
-        {visitFolderFeedback && (
-          <p
-            className={`mt-2 text-center text-xs font-medium ${
-              folderReady ? "text-emerald-700" : "text-red-600"
-            }`}
-          >
-            {visitFolderFeedback}
-          </p>
-        )}
-      </div>
-
-      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-        Adım 2 · Fotoğraf
-      </p>
-
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        multiple
-        onChange={onCapture}
-        className="sr-only"
-        aria-hidden
-      />
-      <input
-        ref={cameraInputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        onChange={onCapture}
-        className="sr-only"
-        aria-hidden
-      />
-
-      {!hasPhotos ? (
-        <div className="space-y-3">
-          <button
-            type="button"
-            onClick={onSelectMultiple}
-            disabled={isUploading || !folderReady}
-            className="btn-primary w-full justify-start gap-3 py-4 text-base disabled:opacity-50"
-          >
-            <CameraIcon className="h-6 w-6 shrink-0" />
-            <span className="flex flex-col items-start gap-0.5 text-left">
-              <span>Dosya Seç</span>
-              <span className="text-xs font-medium text-blue-100">
-                Galeriden toplu seçim yapabilirsiniz
-              </span>
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={onTakePhoto}
-            disabled={isUploading || !folderReady}
-            className="btn-secondary disabled:opacity-50"
-          >
-            <CameraIcon className="h-5 w-5 text-blue-700" />
-            Fotoğraf Çek
-          </button>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-medium text-slate-600">
-              <span className="font-semibold text-blue-700">{photos.length}</span>{" "}
-              fotoğraf seçildi
-            </p>
-            {!isUploading && !isSuccess && (
-              <button
-                type="button"
-                onClick={onAddMore}
-                className="text-sm font-semibold text-blue-700 transition-colors hover:text-blue-900"
-              >
-                + Daha ekle
-              </button>
-            )}
-          </div>
-
-          <div className="max-h-[min(55vh,24rem)] overflow-y-auto overscroll-y-contain rounded-xl border border-slate-100 bg-slate-50/50 p-2 [-webkit-overflow-scrolling:touch]">
-            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-            {photos.map((photo) => (
-              <div
-                key={photo.id}
-                className="relative aspect-square overflow-hidden rounded-lg border border-slate-200 bg-slate-100"
-              >
-                <img
-                  src={photo.previewUrl}
-                  alt={photo.file.name}
-                  className="h-full w-full object-cover"
-                />
-                {!isUploading && !isSuccess && (
-                  <button
-                    type="button"
-                    onClick={() => onRemovePhoto(photo.id)}
-                    className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-white/90 text-xs text-slate-600 shadow-sm transition-colors hover:bg-red-500 hover:text-white"
-                    aria-label="Kaldır"
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-            ))}
-            </div>
-          </div>
-
-          {isUploading && (
-            <div className="flex flex-col items-center gap-3 rounded-xl border border-slate-100 bg-slate-50 py-6">
-              <Spinner />
-              <p className="text-base font-semibold text-slate-700">
-                Yükleniyor... ({uploadState.current}/{uploadState.total})
-              </p>
-            </div>
-          )}
-
-          {isSuccess && (
-            <div className="flex items-center justify-center gap-2 rounded-xl bg-emerald-50 px-4 py-3 text-emerald-700 ring-1 ring-emerald-200">
-              <CheckIcon />
-              <span className="font-semibold">
-                {uploadState.count} fotoğraf başarıyla yüklendi
-              </span>
-            </div>
-          )}
-
-          {isError && (
-            <p className="rounded-xl bg-red-50 px-4 py-3 text-center text-sm text-red-600 ring-1 ring-red-200">
-              {uploadState.message}
-            </p>
-          )}
-
-          {!isUploading && !isSuccess && (
-            <div className="flex flex-col gap-3">
-              <button
-                type="button"
-                onClick={onUpload}
-                disabled={!uploadReady}
-                className="btn-primary w-full py-4 text-base disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {photos.length === 1
-                  ? "Drive'a Yükle"
-                  : `${photos.length} Fotoğrafı Drive'a Yükle`}
-              </button>
-              <button
-                type="button"
-                onClick={onClearAll}
-                className="w-full rounded-xl border border-slate-200 bg-white py-3 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50"
-              >
-                Tümünü temizle
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-    </section>
-  );
-}
-
 function Spinner({
   size = "md",
 }: {
@@ -1193,36 +1422,3 @@ function FolderPlusIcon({ className = "h-6 w-6" }: { className?: string }) {
   );
 }
 
-function CheckIcon() {
-  return (
-    <svg
-      className="h-6 w-6"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      viewBox="0 0 24 24"
-      aria-hidden
-    >
-      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-    </svg>
-  );
-}
-
-function CameraIcon({ className = "" }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden
-    >
-      <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
-      <circle cx="12" cy="13" r="3" />
-    </svg>
-  );
-}

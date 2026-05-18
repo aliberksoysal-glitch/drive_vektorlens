@@ -1,15 +1,17 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f8fafc;
+  /* Hafif buz-mavi zemin, kurumsal mavi vurgular */
+  --background: #eef5ff;
   --foreground: #0f172a;
-  --accent: #1e40af;
-  --accent-muted: #1e3a8a;
-  --vektor-primary: #1e40af;
-  --vektor-deep: #1e3a8a;
-  --surface: #ffffff;
-  --surface-border: #e2e8f0;
-  --corp-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  --accent: #2563eb;
+  --accent-muted: #1d4ed8;
+  --vektor-primary: #2563eb;
+  --vektor-deep: #1e40af;
+  --surface: #fbfdff;
+  --surface-border: #d4e4f7;
+  --corp-shadow: 0 1px 3px rgba(30, 64, 175, 0.08);
+  --backdrop-icon: rgba(37, 99, 235, 0.22);
 }
 
 @theme inline {
@@ -31,10 +33,159 @@ html {
 }
 
 body {
+  position: relative;
   background-color: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
   min-height: 100dvh;
+}
+
+/* —— Arka plan atmosferi (layout’ta AppBackdrop) —— */
+.app-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.app-backdrop__wash {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 80% at 50% -15%, rgba(147, 197, 253, 0.35), transparent 52%),
+    radial-gradient(90% 60% at 100% 20%, rgba(191, 219, 254, 0.45), transparent 50%),
+    radial-gradient(85% 55% at 0% 75%, rgba(219, 234, 254, 0.55), transparent 48%),
+    linear-gradient(180deg, #e8f2fc 0%, #eef5ff 38%, #e4eef9 100%);
+}
+
+.app-backdrop__glow {
+  position: absolute;
+  width: min(42rem, 90vw);
+  height: min(42rem, 90vw);
+  border-radius: 50%;
+  filter: blur(72px);
+  opacity: 0.55;
+}
+
+.app-backdrop__glow--tl {
+  top: -18%;
+  left: -12%;
+  background: radial-gradient(circle, rgba(96, 165, 250, 0.35) 0%, transparent 70%);
+}
+
+.app-backdrop__glow--br {
+  bottom: -22%;
+  right: -15%;
+  background: radial-gradient(circle, rgba(129, 140, 248, 0.22) 0%, transparent 72%);
+}
+
+.app-backdrop__icons {
+  position: absolute;
+  inset: 0;
+}
+
+.app-backdrop__icon {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: clamp(2.5rem, 8vw, 3.75rem);
+  height: clamp(2.5rem, 8vw, 3.75rem);
+  opacity: 0.85;
+  filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.6));
+}
+
+.app-backdrop__float {
+  animation: app-backdrop-drift 22s ease-in-out infinite;
+}
+
+.app-backdrop__float--a {
+  top: 10%;
+  left: 6%;
+  animation-duration: 26s;
+  animation-delay: -2s;
+}
+.app-backdrop__float--b {
+  top: 22%;
+  right: 8%;
+  width: clamp(2rem, 7vw, 3rem);
+  height: clamp(2rem, 7vw, 3rem);
+  animation-duration: 19s;
+  animation-delay: -7s;
+}
+.app-backdrop__float--c {
+  top: 48%;
+  left: 3%;
+  width: clamp(2.75rem, 9vw, 4rem);
+  height: clamp(2.75rem, 9vw, 4rem);
+  animation-duration: 24s;
+  animation-delay: -4s;
+}
+.app-backdrop__float--d {
+  top: 62%;
+  right: 12%;
+  animation-duration: 21s;
+  animation-delay: -11s;
+}
+.app-backdrop__float--e {
+  top: 38%;
+  right: 22%;
+  width: clamp(2.25rem, 6.5vw, 3.25rem);
+  height: clamp(2.25rem, 6.5vw, 3.25rem);
+  animation-duration: 28s;
+  animation-delay: -9s;
+}
+.app-backdrop__float--f {
+  bottom: 18%;
+  left: 18%;
+  width: clamp(2rem, 6vw, 2.85rem);
+  height: clamp(2rem, 6vw, 2.85rem);
+  animation-duration: 23s;
+  animation-delay: -14s;
+}
+.app-backdrop__float--g {
+  bottom: 12%;
+  right: 6%;
+  width: clamp(2.4rem, 7.5vw, 3.4rem);
+  height: clamp(2.4rem, 7.5vw, 3.4rem);
+  animation-duration: 25s;
+  animation-delay: -3s;
+}
+.app-backdrop__float--h {
+  top: 72%;
+  left: 42%;
+  width: clamp(1.85rem, 5.5vw, 2.65rem);
+  height: clamp(1.85rem, 5.5vw, 2.65rem);
+  animation-duration: 20s;
+  animation-delay: -16s;
+}
+
+@keyframes app-backdrop-drift {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  20% {
+    transform: translate(10px, -14px) rotate(2deg);
+  }
+  45% {
+    transform: translate(-6px, 8px) rotate(-1.5deg);
+  }
+  70% {
+    transform: translate(12px, 12px) rotate(1deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-backdrop__float {
+    animation: none;
+  }
+  .btn-primary,
+  .btn-secondary,
+  .segment-tab {
+    transition: none;
+  }
 }
 
 .surface-card {
@@ -51,7 +202,7 @@ body {
   justify-content: center;
   gap: 0.5rem;
   border-radius: 0.5rem;
-  background-color: #1e40af;
+  background-color: #2563eb;
   padding: 0.625rem 1rem;
   font-size: 0.875rem;
   font-weight: 600;
@@ -60,7 +211,7 @@ body {
 }
 
 .btn-primary:hover:not(:disabled) {
-  background-color: #1e3a8a;
+  background-color: #1d4ed8;
 }
 
 .btn-primary:disabled {
@@ -71,7 +222,7 @@ body {
 
 .btn-primary:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px rgba(30, 64, 175, 0.35);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
 }
 
 .btn-secondary {
@@ -82,7 +233,7 @@ body {
   justify-content: center;
   gap: 0.5rem;
   border-radius: 0.5rem;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #cfe2f8;
   background-color: #fff;
   padding: 0.625rem 1rem;
   font-size: 0.875rem;
@@ -94,8 +245,8 @@ body {
 }
 
 .btn-secondary:hover:not(:disabled) {
-  border-color: #cbd5e1;
-  background-color: #f8fafc;
+  border-color: #bfdbfe;
+  background-color: #f8fbff;
 }
 
 .btn-secondary:disabled {
@@ -111,8 +262,8 @@ body {
 .segment-track {
   display: flex;
   border-radius: 0.5rem;
-  border: 1px solid #e2e8f0;
-  background-color: #f1f5f9;
+  border: 1px solid #cfe2f8;
+  background-color: rgba(241, 248, 255, 0.95);
   padding: 0.125rem;
 }
 
@@ -141,10 +292,27 @@ body {
   color: #334155;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .btn-primary,
-  .btn-secondary,
-  .segment-tab {
-    transition: none;
-  }
+.scroll-panel {
+  max-height: min(55vh, 24rem);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+}
+
+.scroll-panel--tall {
+  max-height: min(65vh, 32rem);
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #dbeafe 25%, #eff6ff 50%, #dbeafe 75%);
+  background-size: 200% 100%;
+}
+
+.skeleton-rectangular {
+  border-radius: 0.375rem;
+}
+
+.skeleton-circular {
+  border-radius: 9999px;
 }

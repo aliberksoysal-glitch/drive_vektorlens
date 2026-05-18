@@ -4,9 +4,9 @@ import { VektorLensTitle } from "@/components/VektorLensTitle";
 
 export default function Home() {
   return (
-    <main className="min-h-dvh px-4 py-8 sm:px-6 sm:py-10">
+    <main className="relative z-0 min-h-dvh px-4 py-8 sm:px-6 sm:py-10">
       <div className="mx-auto w-full max-w-md">
-        <header className="mb-7 border-b border-slate-200 pb-6 text-center">
+        <header className="mb-7 border-b border-sky-200/70 pb-6 text-center">
           <VektorLensLogo className="mb-4 h-[4.25rem] w-[4.25rem]" />
           <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">
             Özel Vektör
@@ -21,9 +21,11 @@ export default function Home() {
 
         <DriveApp />
 
-        <footer className="mt-8 flex flex-wrap items-center justify-center gap-x-1.5 text-center text-xs text-slate-500">
+        <footer className="mt-8 flex flex-col items-center border-t border-sky-200/70 pt-6 text-center">
           <VektorLensTitle size="sm" />
-          <span>· Mobil saha kullanımı için optimize edildi</span>
+          <p className="mt-3 text-[11px] text-slate-400">
+            by developer soysal
+          </p>
         </footer>
       </div>
     </main>

@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { parseApiResponse } from "@/lib/api/parseResponse";
+import { useConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useToast } from "@/components/ui/Toast";
 
 type DeleteItemButtonProps = {
   itemId: string;
@@ -21,17 +23,26 @@ export function DeleteItemButton({
   iconOnly = true,
 }: DeleteItemButtonProps) {
   const [deleting, setDeleting] = useState(false);
+  const { confirm } = useConfirmDialog();
+  const { showToast } = useToast();
 
   async function handleDelete(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
 
-    const label =
+    const message =
       itemKind === "klasör" || itemKind === "işletme"
         ? `"${itemName}" klasörünü ve içindekileri silmek istediğinize emin misiniz?`
         : `"${itemName}" öğesini silmek istediğinize emin misiniz?`;
 
-    if (!window.confirm(label)) return;
+    const ok = await confirm({
+      title: "Silme onayı",
+      message,
+      confirmLabel: "Sil",
+      cancelLabel: "Vazgeç",
+      variant: "danger",
+    });
+    if (!ok) return;
 
     setDeleting(true);
     try {
@@ -39,15 +50,19 @@ export function DeleteItemButton({
         `/api/drive/items?fileId=${encodeURIComponent(itemId)}`,
         { method: "DELETE" },
       );
-      const { data, ok } = await parseApiResponse(res);
-      if (!ok || !data.ok) {
+      const { data, ok: apiOk } = await parseApiResponse(res);
+      if (!apiOk || !data.ok) {
         throw new Error(
           typeof data.error === "string" ? data.error : "Silinemedi.",
         );
       }
       onDeleted();
+      showToast({ message: "Silindi.", variant: "success" });
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Silinemedi.");
+      showToast({
+        message: err instanceof Error ? err.message : "Silinemedi.",
+        variant: "error",
+      });
     } finally {
       setDeleting(false);
     }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Readable } from "stream";
+import { createHash } from "crypto";
 import {
   assertUploadFolderId,
   DriveConfigError,
@@ -11,9 +12,26 @@ import { handleDriveRouteError } from "@/lib/drive/errors";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 120;
 
-const MAX_BYTES = 4 * 1024 * 1024;
+/** İstemci fotoğrafları 10'arlı paketler halinde sıralı yükler; bu rota istek başına tek dosya alır. */
+const MAX_BYTES = 20 * 1024 * 1024;
+const IMAGE_MIME_REGEX = /^image\/(jpeg|png|webp|heic|heif)$/;
+
+function sanitizeFileName(name: string): string {
+  const s = name
+    .replace(/[<>:"|?*]/g, "_")
+    .replace(/\//g, "_")
+    .replace(/\\/g, "_")
+    .replace(/\0/g, "")
+    .trim()
+    .slice(0, 200);
+  return s || `photo-${Date.now()}.jpg`;
+}
+
+function computeMd5(buffer: Buffer): string {
+  return createHash("md5").update(buffer).digest("base64");
+}
 
 function logUploadError(label: string, error: unknown): void {
   if (error instanceof Error) {
@@ -74,14 +92,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const mimeType = uploadFile.type || "image/jpeg";
+    if (!IMAGE_MIME_REGEX.test(mimeType)) {
+      return NextResponse.json(
+        {
+          success: false,
+          ok: false,
+          error: "Geçersiz dosya türü. Sadece görsel dosyalar kabul edilir.",
+        },
+        { status: 415 },
+      );
+    }
+
     step = "hedef klasör doğrulama";
     await assertUploadFolderId(businessFolderId);
 
     step = "dosya buffer hazırlama";
     const bytes = await uploadFile.arrayBuffer();
     const buffer = Buffer.from(bytes);
-    const fileName = uploadFile.name || `saha-${Date.now()}.jpg`;
-    const mimeType = uploadFile.type || "image/jpeg";
+    const fileName = sanitizeFileName(uploadFile.name || `saha-${Date.now()}.jpg`);
+    const localMd5 = computeMd5(buffer);
 
     const drive = getDriveClient();
 
@@ -102,16 +132,90 @@ export async function POST(req: NextRequest) {
         mimeType,
         body: Readable.from(buffer),
       },
-      fields: "id, name, size, parents",
+      fields: "id, name, size, md5Checksum",
       supportsAllDrives: true,
     });
 
     const fileId = response.data.id;
+    const driveMd5 = response.data.md5Checksum;
+    const reportedSizeRaw = response.data.size;
+    const reportedSize =
+      reportedSizeRaw === undefined || reportedSizeRaw === null
+        ? null
+        : Number(reportedSizeRaw);
+
     if (!fileId) {
       throw new Error("Drive dosya ID döndürmedi.");
     }
 
-    console.log("[UPLOAD] tamamlandı:", { fileId, accountEmail });
+    /** Drive bazı türlerde (ör. HEIC) içeriği dönüştürebilir; MD5 farklı olsa da dosya geçerli olabilir. */
+    const checksumMatch =
+      !driveMd5 || driveMd5 === localMd5;
+    const sizeMatch =
+      reportedSize === null ||
+      Number.isNaN(reportedSize) ||
+      reportedSize === buffer.length;
+
+    if (!sizeMatch) {
+      try {
+        await drive.files.delete({ fileId, supportsAllDrives: true });
+      } catch {
+        console.error("[UPLOAD] temizleme başarısız:", fileId);
+      }
+      throw new Error(
+        `Dosya boyutu uyuşmazlığı (beklenen ${buffer.length} bayt, Drive ${reportedSize}). Yükleme geri alındı.`,
+      );
+    }
+
+    if (!checksumMatch) {
+      console.warn("[UPLOAD] MD5 farklı; boyut uyumlu, dosya korunuyor:", {
+        fileId,
+        mimeType,
+        localMd5,
+        driveMd5,
+        size: buffer.length,
+      });
+    }
+
+    const verified = checksumMatch && !!driveMd5;
+
+    console.log("[UPLOAD] tamamlandı:", { fileId, accountEmail, verified });
+
+    console.log(
+      JSON.stringify({
+        level: "info",
+        event: "drive.upload.complete",
+        fileId,
+        fileName,
+        folderId: businessFolderId,
+        size: uploadFile.size,
+        accountEmail,
+        verified,
+        ts: new Date().toISOString(),
+      }),
+    );
+
+    const webhook = process.env.ACTIVITY_WEBHOOK_URL?.trim();
+    if (webhook) {
+      const payload = {
+        event: "drive.upload",
+        fileId,
+        fileName,
+        folderId: businessFolderId,
+        mimeType,
+        size: uploadFile.size,
+        accountEmail,
+        verified,
+        ts: new Date().toISOString(),
+      };
+      void fetch(webhook, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).catch(() => {
+        console.warn("[UPLOAD] webhook gönderilemedi");
+      });
+    }
 
     return NextResponse.json({
       success: true,
@@ -119,9 +223,13 @@ export async function POST(req: NextRequest) {
       fileId,
       name: response.data.name ?? fileName,
       size: response.data.size,
+      md5Checksum: driveMd5 ?? localMd5,
+      verified,
       parents: response.data.parents ?? [businessFolderId],
       accountEmail,
-      message: "Yükleme başarılı.",
+      message: checksumMatch
+        ? "Yükleme başarılı."
+        : "Yükleme tamamlandı (Drive tarafında içerik dönüşümü olmuş olabilir; MD5 doğrulanamadı).",
     });
   } catch (error) {
     logUploadError(`Hata (adım: ${step})`, error);

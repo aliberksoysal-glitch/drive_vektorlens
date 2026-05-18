@@ -56,6 +56,15 @@ export type DriveBrowseResult = {
   files: DriveBrowseFile[];
 };
 
+/** Tek Drive API sayfası; ilk istekte folder + parentId dolu, devamında boş. */
+export type DriveBrowsePagePayload = {
+  folder?: BusinessFolder;
+  parentId?: string | null;
+  folders: BusinessFolder[];
+  files: DriveBrowseFile[];
+  nextPageToken?: string;
+};
+
 let cachedOAuth: OAuth2Client | null = null;
 
 /** Tırnaklı .env değerlerini ve fazla boşlukları temizler. */
@@ -258,49 +267,51 @@ export async function assertBusinessFolderId(folderId: string): Promise<void> {
   }
 }
 
-/** Yükleme hedefi: kök altı işletme veya işletme altı ziyaret klasörü. */
+/** Yükleme hedefi: uygulama kök klasörünün altındaki herhangi bir klasör (herhangi bir derinlik). */
 export async function assertUploadFolderId(folderId: string): Promise<void> {
   await ensureDriveAuth();
   const drive = getDriveClient();
   const rootFolderId = getRootFolderId();
 
-  const res = await drive.files.get({
-    fileId: folderId,
-    fields: "id, mimeType, parents",
-    supportsAllDrives: true,
-  });
-
-  if (res.data.mimeType !== FOLDER_MIME) {
-    throw new Error("Geçersiz hedef: bir klasör ID'si gerekli.");
+  if (folderId === rootFolderId) {
+    throw new Error("Kök klasöre doğrudan yükleme yapılamaz.");
   }
 
-  const parents = res.data.parents ?? [];
-  if (parents.includes(rootFolderId)) {
-    return;
-  }
+  let walker: string | undefined = folderId;
 
-  if (parents.length === 1) {
-    const parentRes = await drive.files.get({
-      fileId: parents[0],
+  for (let depth = 0; depth < 40; depth++) {
+    if (!walker) {
+      break;
+    }
+
+    const currentId: string = walker;
+    const fileRes = await drive.files.get({
+      fileId: currentId,
       fields: "id, mimeType, parents",
       supportsAllDrives: true,
     });
-    if (
-      parentRes.data.mimeType === FOLDER_MIME &&
-      parentRes.data.parents?.includes(rootFolderId)
-    ) {
+
+    if (fileRes.data.mimeType !== FOLDER_MIME) {
+      throw new Error("Geçersiz hedef: bir klasör ID'si gerekli.");
+    }
+
+    const parents = fileRes.data.parents ?? [];
+    if (parents.includes(rootFolderId)) {
       return;
     }
+
+    walker = parents[0];
   }
 
   throw new Error(
-    "Geçersiz yükleme hedefi. Lütfen listeden bir işletme seçin.",
+    "Geçersiz yükleme hedefi. Uygulama kök klasörü altında bir klasör seçin.",
   );
 }
 
 export async function getOrCreateVisitFolder(
   businessFolderId: string,
   businessName: string,
+  visitDate: Date = new Date(),
 ): Promise<{ folder: BusinessFolder; created: boolean }> {
   await assertBusinessFolderId(businessFolderId);
 
@@ -309,7 +320,7 @@ export async function getOrCreateVisitFolder(
     throw new Error("İşletme adı boş olamaz.");
   }
 
-  const visitName = buildVisitFolderName(trimmedName);
+  const visitName = buildVisitFolderName(trimmedName, visitDate);
   const existing = await findFolderByNameUnderParent(
     businessFolderId,
     visitName,
@@ -319,6 +330,27 @@ export async function getOrCreateVisitFolder(
   }
 
   const created = await createFolderUnderParent(businessFolderId, visitName);
+  return { folder: created, created: true };
+}
+
+/** Ziyaret klasörü altında alt klasör bulur veya oluşturur (örn. Pano, Merdiven). */
+export async function getOrCreateChildFolder(
+  parentFolderId: string,
+  name: string,
+): Promise<{ folder: BusinessFolder; created: boolean }> {
+  await assertUploadFolderId(parentFolderId);
+
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error("Alt klasör adı boş olamaz.");
+  }
+
+  const existing = await findFolderByNameUnderParent(parentFolderId, trimmed);
+  if (existing) {
+    return { folder: existing, created: false };
+  }
+
+  const created = await createFolderUnderParent(parentFolderId, trimmed);
   return { folder: created, created: true };
 }
 
@@ -474,62 +506,134 @@ export async function assertReadableFolderId(
   throw new Error("Bu klasöre erişim yok.");
 }
 
-/** Klasör içeriğini listeler (alt klasörler + dosyalar). */
-export async function listFolderContents(
+/** Tek sayfa klasör içeriği (API sayfalaması). */
+export async function listFolderBrowsePage(
   folderId: string,
-): Promise<DriveBrowseResult> {
-  const folder = await assertReadableFolderId(folderId);
+  options?: { pageToken?: string; pageSize?: number },
+): Promise<DriveBrowsePagePayload> {
   const drive = getDriveClient();
   const rootFolderId = getRootFolderId();
+  const rawSize = options?.pageSize ?? 80;
+  const pageSize = Math.min(200, Math.max(10, Number.isFinite(rawSize) ? rawSize : 80));
+  const pageToken = options?.pageToken?.trim() || undefined;
 
-  const meta = await drive.files.get({
-    fileId: folderId,
-    fields: "parents",
-    supportsAllDrives: true,
-  });
-  const parents = meta.data.parents ?? [];
-  let parentId: string | null = parents[0] ?? null;
-  if (folderId === rootFolderId) {
-    parentId = null;
+  let folder: BusinessFolder | undefined;
+  let parentId: string | null | undefined;
+
+  if (!pageToken) {
+    folder = await assertReadableFolderId(folderId);
+    const meta = await drive.files.get({
+      fileId: folderId,
+      fields: "parents",
+      supportsAllDrives: true,
+    });
+    const parents = meta.data.parents ?? [];
+    parentId = parents[0] ?? null;
+    if (folderId === rootFolderId) {
+      parentId = null;
+    }
+  } else {
+    await ensureDriveAuth();
   }
+
+  const res = await drive.files.list({
+    q: `'${folderId}' in parents and trashed=false`,
+    fields:
+      "nextPageToken, files(id, name, mimeType, modifiedTime, size, thumbnailLink, webViewLink)",
+    orderBy: "folder,name",
+    pageSize,
+    pageToken,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
 
   const folders: BusinessFolder[] = [];
   const files: DriveBrowseFile[] = [];
-  let pageToken: string | undefined;
+
+  for (const file of res.data.files ?? []) {
+    if (!file.id || !file.name || !file.mimeType) continue;
+
+    if (file.mimeType === FOLDER_MIME) {
+      folders.push({ id: file.id, name: file.name });
+    } else {
+      files.push({
+        id: file.id,
+        name: file.name,
+        mimeType: file.mimeType,
+        modifiedTime: file.modifiedTime ?? undefined,
+        size: file.size ?? undefined,
+        thumbnailLink: file.thumbnailLink ?? undefined,
+        webViewLink: file.webViewLink ?? undefined,
+      });
+    }
+  }
+
+  const next = res.data.nextPageToken ?? undefined;
+  const chunk = { folders, files, nextPageToken: next };
+
+  if (!pageToken && folder) {
+    return { folder, parentId: parentId ?? null, ...chunk };
+  }
+
+  return chunk;
+}
+
+/** Bir klasörün tüm alt klasörlerini listeler (ortak havuz / canlı senkron). */
+export async function listChildFolders(
+  parentFolderId: string,
+): Promise<BusinessFolder[]> {
+  await assertUploadFolderId(parentFolderId);
+
+  const merged: BusinessFolder[] = [];
+  let token: string | undefined;
 
   do {
-    const res = await drive.files.list({
-      q: `'${folderId}' in parents and trashed=false`,
-      fields:
-        "nextPageToken, files(id, name, mimeType, modifiedTime, size, thumbnailLink, webViewLink)",
-      orderBy: "folder,name",
-      pageSize: 200,
-      pageToken,
-      supportsAllDrives: true,
-      includeItemsFromAllDrives: true,
+    const page = await listFolderBrowsePage(parentFolderId, {
+      pageToken: token,
+      pageSize: 100,
     });
+    merged.push(...page.folders);
+    token = page.nextPageToken;
+  } while (token);
 
-    for (const file of res.data.files ?? []) {
-      if (!file.id || !file.name || !file.mimeType) continue;
+  return merged.sort((a, b) =>
+    a.name.localeCompare(b.name, "tr", { sensitivity: "base" }),
+  );
+}
 
-      if (file.mimeType === FOLDER_MIME) {
-        folders.push({ id: file.id, name: file.name });
-      } else {
-        files.push({
-          id: file.id,
-          name: file.name,
-          mimeType: file.mimeType,
-          modifiedTime: file.modifiedTime ?? undefined,
-          size: file.size ?? undefined,
-          thumbnailLink: file.thumbnailLink ?? undefined,
-          webViewLink: file.webViewLink ?? undefined,
-        });
-      }
-    }
-    pageToken = res.data.nextPageToken ?? undefined;
-  } while (pageToken);
+/** Tüm sayfaları birleştirir (sunucu tarafı tam liste). */
+export async function listFolderContents(
+  folderId: string,
+): Promise<DriveBrowseResult> {
+  const mergedFolders: BusinessFolder[] = [];
+  const mergedFiles: DriveBrowseFile[] = [];
+  let token: string | undefined;
+  let folder: BusinessFolder | undefined;
+  let parentId: string | null = null;
 
-  return { folder, parentId, folders, files };
+  for (;;) {
+    const page = await listFolderBrowsePage(folderId, {
+      pageToken: token,
+      pageSize: 200,
+    });
+    if (page.folder) folder = page.folder;
+    if (page.parentId !== undefined) parentId = page.parentId;
+    mergedFolders.push(...page.folders);
+    mergedFiles.push(...page.files);
+    token = page.nextPageToken;
+    if (!token) break;
+  }
+
+  if (!folder) {
+    throw new Error("Klasör bilgisi alınamadı.");
+  }
+
+  return {
+    folder,
+    parentId,
+    folders: mergedFolders,
+    files: mergedFiles,
+  };
 }
 
 async function safeDeleteFile(fileId: string) {
@@ -627,6 +731,34 @@ async function deleteFolderRecursive(folderId: string) {
   } while (pageToken);
 
   await drive.files.delete({ fileId: folderId, supportsAllDrives: true });
+}
+
+/** Drive öğesinin adını günceller (kök altında olmalı). */
+export async function renameDriveItem(
+  itemId: string,
+  newName: string,
+): Promise<{ id: string; name: string }> {
+  await ensureDriveAuth();
+  await assertDeletableItemId(itemId);
+
+  const trimmed = newName.trim();
+  if (!trimmed) {
+    throw new Error("Ad boş olamaz.");
+  }
+
+  const drive = getDriveClient();
+  const res = await drive.files.update({
+    fileId: itemId,
+    requestBody: { name: trimmed },
+    fields: "id, name",
+    supportsAllDrives: true,
+  });
+
+  if (!res.data.id || !res.data.name) {
+    throw new Error("Yeniden adlandırılamadı.");
+  }
+
+  return { id: res.data.id, name: res.data.name };
 }
 
 /** Drive öğesini kalıcı olarak siler (klasörler içerikleriyle birlikte). */
