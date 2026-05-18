@@ -17,7 +17,7 @@ import {
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 /** İstemci medyayı 10'arlı paketler halinde sıralı yükler; bu rota istek başına tek dosya alır. */
 
@@ -90,7 +90,7 @@ export async function POST(req: NextRequest) {
     );
     const maxBytes = maxUploadBytesForMime(mimeType);
 
-    if (uploadFile.size > maxBytes) {
+    if (maxBytes != null && uploadFile.size > maxBytes) {
       return NextResponse.json(
         {
           success: false,

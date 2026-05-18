@@ -1,7 +1,4 @@
-/** İstemci: videolar bu boyutu aşamaz */
-export const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
-
-/** Sunucu: sıkıştırılmış görseller için üst sınır */
+/** Sunucu: sıkıştırılmış görseller için üst sınır (videolarda sunucu tarafı boyut sınırı yok) */
 export const MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 export const IMAGE_MIME_REGEX =
@@ -30,8 +27,9 @@ export function isAllowedUploadMime(mimeType: string): boolean {
   return IMAGE_MIME_REGEX.test(mimeType) || VIDEO_MIME_REGEX.test(mimeType);
 }
 
-export function maxUploadBytesForMime(mimeType: string): number {
-  return mimeType.startsWith("video/") ? MAX_VIDEO_BYTES : MAX_IMAGE_UPLOAD_BYTES;
+/** Video için `null` — boyut kontrolü yapılmaz. */
+export function maxUploadBytesForMime(mimeType: string): number | null {
+  return mimeType.startsWith("video/") ? null : MAX_IMAGE_UPLOAD_BYTES;
 }
 
 /** Bazı mobil tarayıcılar video için boş MIME gönderir; uzantıdan çıkarım yapılır. */

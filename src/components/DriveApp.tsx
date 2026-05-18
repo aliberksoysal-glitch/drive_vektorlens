@@ -7,7 +7,6 @@ import { compressImageForUpload } from "@/lib/client/compressImage";
 import {
   isUploadableMediaFile,
   isVideoFile,
-  MAX_VIDEO_BYTES,
 } from "@/lib/mediaTypes";
 import {
   enqueueOfflineUpload,
@@ -358,33 +357,13 @@ export function DriveApp() {
       return;
     }
 
-    let rejectedOversizeVideo = false;
-    const mediaFiles: File[] = [];
-
-    for (const file of Array.from(picked)) {
-      if (!isUploadableMediaFile(file)) continue;
-      if (isVideoFile(file) && file.size > MAX_VIDEO_BYTES) {
-        rejectedOversizeVideo = true;
-        continue;
-      }
-      mediaFiles.push(file);
-    }
-
-    if (rejectedOversizeVideo) {
-      showToast({
-        message:
-          "Videolar maksimum 50 MB olabilir, lütfen daha kısa çekin.",
-        variant: "error",
-      });
-    }
+    const mediaFiles = Array.from(picked).filter(isUploadableMediaFile);
 
     if (!mediaFiles.length) {
-      if (!rejectedOversizeVideo) {
-        showToast({
-          message: "Geçerli fotoğraf veya video bulunamadı.",
-          variant: "error",
-        });
-      }
+      showToast({
+        message: "Geçerli fotoğraf veya video bulunamadı.",
+        variant: "error",
+      });
       e.target.value = "";
       return;
     }
