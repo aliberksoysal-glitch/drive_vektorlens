@@ -90,6 +90,7 @@ export function DriveApp() {
   const [offlineQueueCount, setOfflineQueueCount] = useState(0);
   const [flushingOffline, setFlushingOffline] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
+  const [updatesOpen, setUpdatesOpen] = useState(false);
 
   useEffect(() => {
     if (!isWelcomeDismissed()) {
@@ -659,6 +660,7 @@ export function DriveApp() {
         </button>
         </div>
         <WelcomeModal open={welcomeOpen} onClose={handleWelcomeClose} />
+        <UpdatesModal open={updatesOpen} onClose={() => setUpdatesOpen(false)} />
       </>
     );
   }
@@ -697,6 +699,7 @@ export function DriveApp() {
             filteredBusinesses={filteredBusinesses}
             onSelectBusiness={handleSelectBusiness}
             onOpenAddModal={openAddBusinessModal}
+            onOpenUpdatesModal={() => setUpdatesOpen(true)}
           />
           <AddBusinessModal
             open={isAddModalOpen}
@@ -754,6 +757,7 @@ export function DriveApp() {
       )}
 
       <WelcomeModal open={welcomeOpen} onClose={handleWelcomeClose} />
+      <UpdatesModal open={updatesOpen} onClose={() => setUpdatesOpen(false)} />
     </div>
   );
 }
@@ -824,6 +828,7 @@ function BusinessPicker({
   filteredBusinesses,
   onSelectBusiness,
   onOpenAddModal,
+  onOpenUpdatesModal,
 }: {
   connection: Extract<ConnectionState, { status: "connected" }>;
   searchQuery: string;
@@ -835,6 +840,7 @@ function BusinessPicker({
   filteredBusinesses: Business[];
   onSelectBusiness: (b: Business) => void;
   onOpenAddModal: () => void;
+  onOpenUpdatesModal: () => void;
 }) {
   const [sortOrder, setSortOrder] = useState<"az" | "za" | "new">("az");
 
@@ -854,10 +860,19 @@ function BusinessPicker({
               Yükleme yapılacak işletmeyi seçin
             </p>
           </div>
-          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-            Bağlı
-          </span>
+          <div className="flex flex-col items-end gap-1.5 shrink-0">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              Bağlı
+            </span>
+            <button
+              type="button"
+              onClick={onOpenUpdatesModal}
+              className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-800 ring-1 ring-blue-200 transition-colors hover:bg-blue-100"
+            >
+              ✨ Yenilikler
+            </button>
+          </div>
         </div>
         <div className="mt-2 flex items-center justify-between gap-2">
           <p className="min-w-0 flex-1 truncate text-xs text-slate-500">
@@ -1181,6 +1196,118 @@ function FolderPlusIcon({ className = "h-6 w-6" }: { className?: string }) {
         d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"
       />
     </svg>
+  );
+}
+
+function UpdatesModal({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  const UPDATES = [
+    {
+      badge: "Yeni",
+      title: "Tek Ekran Entegrasyonu",
+      description: "Sekmeler tamamen kaldırıldı. İşletme seçildiğinde gezgin ve yükleme paneli tek bir akışta bir arada sunulur.",
+      date: "Haziran 2026",
+      icon: "⚡",
+    },
+    {
+      badge: "Yeni",
+      title: "İşletme Silme Yeteneği",
+      description: "Drive üzerindeki işletme klasörlerini ve içlerindeki tüm verileri doğrudan ana ekrandan silebilirsiniz.",
+      date: "Haziran 2026",
+      icon: "🗑️",
+    },
+    {
+      badge: "İyileştirme",
+      title: "Akıllı Dizin Navigasyonu",
+      description: "Gezinti yığıtı durum yönetiminin iyileştirilmesiyle klasör geçişleri çok daha hızlı ve hatasız hale getirildi.",
+      date: "Haziran 2026",
+      icon: "📂",
+    },
+  ];
+
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-end justify-center p-4 sm:items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="updates-modal-title"
+    >
+      <button
+        type="button"
+        className="absolute inset-0 bg-slate-900/35 backdrop-blur-md"
+        aria-label="Kapat"
+        onClick={onClose}
+      />
+      <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-2xl shadow-blue-900/10">
+        <div className="bg-gradient-to-br from-blue-800 to-indigo-900 px-6 py-5 text-white">
+          <div className="flex items-center justify-between">
+            <span className="rounded-full bg-blue-500/30 px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider text-blue-200">
+              Versiyon Güncellemesi
+            </span>
+            <span className="text-xs text-blue-200 font-medium">v1.2.0</span>
+          </div>
+          <h2
+            id="updates-modal-title"
+            className="mt-2 text-xl font-bold leading-tight sm:text-2xl"
+          >
+            Yenilikler & Güncellemeler
+          </h2>
+          <p className="mt-1 text-sm text-blue-100">
+            Saha operasyonlarınızı kolaylaştıracak son değişiklikler.
+          </p>
+        </div>
+
+        <div className="max-h-[24rem] overflow-y-auto px-5 py-5 space-y-5 scroll-panel">
+          {UPDATES.map((up) => (
+            <div key={up.title} className="flex gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-lg ring-1 ring-blue-100" aria-hidden>
+                {up.icon}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-bold text-slate-900">{up.title}</h3>
+                  <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                    up.badge === "Yeni" ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/10" : "bg-blue-50 text-blue-700 ring-1 ring-blue-600/10"
+                  }`}>
+                    {up.badge}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-500">{up.date}</p>
+                <p className="mt-1.5 text-sm leading-relaxed text-slate-600">
+                  {up.description}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="border-t border-slate-100 bg-slate-50/80 px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn-primary w-full py-3.5 text-base font-semibold"
+          >
+            Harika, Devam Et
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
