@@ -107,7 +107,7 @@ test.describe("Target Folder Selection and Folder Navigation Flow", () => {
     await page.getByRole("button", { name: "Anladım, Başlayalım" }).click();
 
     // 1. Company selection list should load
-    const businessButton = page.getByRole("button", { name: "Aydin Eczanesi" });
+    const businessButton = page.getByRole("button", { name: "Aydin Eczanesi", exact: true });
     await expect(businessButton).toBeVisible();
     await businessButton.click();
 
@@ -147,7 +147,7 @@ test.describe("Target Folder Selection and Folder Navigation Flow", () => {
     await goBackToBusinessesBtn.click();
 
     // Should be back to the company list
-    await expect(page.getByRole("button", { name: "Aydin Eczanesi" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Bursa Tekstil" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Aydin Eczanesi", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Bursa Tekstil", exact: true })).toBeVisible();
   });
 });

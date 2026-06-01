@@ -21,6 +21,7 @@ import {
 import { UploadFolderPicker } from "@/components/UploadFolderPicker";
 import { FieldUploadPanel } from "@/components/FieldUploadUI";
 import { WelcomeModal } from "@/components/WelcomeModal";
+import { DeleteItemButton } from "@/components/DeleteItemButton";
 import {
   isWelcomeDismissed,
   setWelcomeDismissed,
@@ -961,17 +962,25 @@ function BusinessPicker({
           ) : (
             <ul className="scroll-panel divide-y divide-slate-100 bg-white">
               {sortedBusinesses.map((business) => (
-                <li key={business.id}>
+                <li key={business.id} className="flex items-center justify-between group/li hover:bg-blue-50/60">
                   <button
                     type="button"
                     onClick={() => onSelectBusiness(business)}
-                    className="group flex w-full min-w-0 items-center justify-between gap-3 px-4 py-4 text-left transition-all hover:bg-blue-50/60 active:scale-[0.995]"
+                    className="group flex min-w-0 flex-1 items-center justify-between gap-3 px-4 py-4 text-left transition-all active:scale-[0.995]"
                   >
                     <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-slate-800 group-hover:text-blue-900">
                       {business.name}
                     </span>
                     <ChevronIcon className="h-5 w-5 shrink-0 text-slate-300 group-hover:text-blue-700" />
                   </button>
+                  <div className="pr-4 flex items-center shrink-0">
+                    <DeleteItemButton
+                      itemId={business.id}
+                      itemName={business.name}
+                      itemKind="işletme"
+                      onDeleted={onRefreshBusinesses}
+                    />
+                  </div>
                 </li>
               ))}
             </ul>
