@@ -25,6 +25,8 @@ import { DeleteItemButton } from "@/components/DeleteItemButton";
 import {
   isWelcomeDismissed,
   setWelcomeDismissed,
+  isUpdatesDismissed,
+  setUpdatesDismissed,
 } from "@/lib/client/welcomeStorage";
 import { useToast } from "@/components/ui/Toast";
 import { useAudio } from "@/lib/hooks/useAudio";
@@ -95,6 +97,8 @@ export function DriveApp() {
   useEffect(() => {
     if (!isWelcomeDismissed()) {
       setWelcomeOpen(true);
+    } else if (!isUpdatesDismissed()) {
+      setUpdatesOpen(true);
     }
   }, []);
 
@@ -109,6 +113,14 @@ export function DriveApp() {
       setWelcomeDismissed();
     }
     setWelcomeOpen(false);
+    if (!isUpdatesDismissed()) {
+      setUpdatesOpen(true);
+    }
+  }
+
+  function handleUpdatesClose() {
+    setUpdatesDismissed();
+    setUpdatesOpen(false);
   }
 
   const loadBusinesses = useCallback(async () => {
@@ -660,7 +672,7 @@ export function DriveApp() {
         </button>
         </div>
         <WelcomeModal open={welcomeOpen} onClose={handleWelcomeClose} />
-        <UpdatesModal open={updatesOpen} onClose={() => setUpdatesOpen(false)} />
+        <UpdatesModal open={updatesOpen} onClose={handleUpdatesClose} />
       </>
     );
   }
@@ -757,7 +769,7 @@ export function DriveApp() {
       )}
 
       <WelcomeModal open={welcomeOpen} onClose={handleWelcomeClose} />
-      <UpdatesModal open={updatesOpen} onClose={() => setUpdatesOpen(false)} />
+      <UpdatesModal open={updatesOpen} onClose={handleUpdatesClose} />
     </div>
   );
 }
