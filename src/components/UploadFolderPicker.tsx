@@ -553,17 +553,6 @@ export function UploadFolderPicker({
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <DeleteItemButton
-                itemId={previewFile.id}
-                itemName={previewFile.name}
-                itemKind="fotoğraf"
-                onDeleted={() => {
-                  setPreviewFile(null);
-                  void loadChildren(current.id, { append: false });
-                }}
-                iconOnly={false}
-                className="!text-white hover:!bg-white/10"
-              />
               <button
                 type="button"
                 onClick={() => setPreviewFile(null)}
