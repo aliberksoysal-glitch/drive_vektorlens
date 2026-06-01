@@ -541,16 +541,18 @@ export function UploadFolderPicker({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
-          onClick={() => setPreviewFile(null)}
+          className="fixed inset-0 z-50 flex flex-col bg-black/95"
           role="dialog"
           aria-modal
         >
-          <div
-            className="relative flex h-full w-full flex-col items-center justify-center"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="absolute -top-12 inset-x-0 z-10 flex items-center justify-between gap-2">
+          {/* Top Navigation Bar */}
+          <div className="flex items-center justify-between gap-3 bg-black/60 px-4 py-3 text-white backdrop-blur-md border-b border-white/10">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-white/90">
+                {previewFile.name}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
               <DeleteItemButton
                 itemId={previewFile.id}
                 itemName={previewFile.name}
@@ -565,34 +567,43 @@ export function UploadFolderPicker({
               <button
                 type="button"
                 onClick={() => setPreviewFile(null)}
-                className="rounded-lg bg-white/10 px-3 py-1.5 text-sm font-medium text-white hover:bg-white/20"
+                className="rounded-xl bg-white/15 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-white/25 active:scale-95"
               >
-                Kapat ✕
+                Geri ✕
               </button>
             </div>
-            {previewFile.thumbnailLink ? (
-              <TransformWrapper
-                initialScale={1}
-                minScale={0.5}
-                maxScale={4}
-                doubleClick={{ mode: "toggle" }}
-              >
-                <TransformComponent>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={previewFile.thumbnailLink.replace(/=s\d+/, "=s1200")}
-                    alt={previewFile.name}
-                    className="max-h-[85vh] max-w-full rounded-lg object-contain"
-                    draggable={false}
-                  />
-                </TransformComponent>
-              </TransformWrapper>
-            ) : (
-              <p className="text-white">Önizleme kullanılamıyor</p>
-            )}
-            <p className="mt-4 truncate text-center text-sm text-white/95">
-              {previewFile.name}
-            </p>
+          </div>
+
+          {/* Zoomable Image Container */}
+          <div
+            className="relative flex flex-1 items-center justify-center p-4"
+            onClick={() => setPreviewFile(null)}
+          >
+            <div
+              className="relative flex h-full w-full items-center justify-center"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {previewFile.thumbnailLink ? (
+                <TransformWrapper
+                  initialScale={1}
+                  minScale={0.5}
+                  maxScale={4}
+                  doubleClick={{ mode: "toggle" }}
+                >
+                  <TransformComponent>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={previewFile.thumbnailLink.replace(/=s\d+/, "=s1200")}
+                      alt={previewFile.name}
+                      className="max-h-[80vh] max-w-full rounded-lg object-contain shadow-2xl"
+                      draggable={false}
+                    />
+                  </TransformComponent>
+                </TransformWrapper>
+              ) : (
+                <p className="text-white/70 text-sm">Önizleme kullanılamıyor</p>
+              )}
+            </div>
           </div>
         </motion.div>
       )}
