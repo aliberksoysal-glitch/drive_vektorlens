@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -18,13 +18,8 @@ import {
   buildPhotoUploadFileName,
   getUploadFilenameTemplate,
 } from "@/lib/client/uploadFilename";
-import { DriveBrowser } from "@/components/DriveBrowser";
-import {
-  FieldUploadPanel,
-  UploadTargetBar,
-  VisitDatePicker,
-  type SubfolderOption,
-} from "@/components/FieldUploadUI";
+import { UploadFolderPicker } from "@/components/UploadFolderPicker";
+import { FieldUploadPanel } from "@/components/FieldUploadUI";
 import { WelcomeModal } from "@/components/WelcomeModal";
 import {
   isWelcomeDismissed,
@@ -32,11 +27,7 @@ import {
 } from "@/lib/client/welcomeStorage";
 import { useToast } from "@/components/ui/Toast";
 import { useAudio } from "@/lib/hooks/useAudio";
-import {
-  formatVisitDate,
-  formatVisitDateFromInput,
-  getTodayDateInputValue,
-} from "@/lib/drive/folderNaming";
+
 type Business = { id: string; name: string };
 type UploadTarget = { id: string; name: string };
 
@@ -69,8 +60,6 @@ const MAX_MEDIA_ITEMS = 100;
 /** Vercel timeout riskini azaltmak için paket başına yükleme adedi */
 const UPLOAD_CHUNK_SIZE = 10;
 
-type AppTab = "upload" | "browse";
-
 export function DriveApp() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { showToast } = useToast();
@@ -82,17 +71,8 @@ export function DriveApp() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [filteredBusinesses, setFilteredBusinesses] = useState<Business[]>([]);
   const [selectedBusiness, setSelectedBusiness] = useState<Business | null>(null);
-  const [dateFolder, setDateFolder] = useState<UploadTarget | null>(null);
-  const [preparingTarget, setPreparingTarget] = useState(false);
-  const [targetError, setTargetError] = useState<string | null>(null);
-  const [childFolders, setChildFolders] = useState<SubfolderOption[]>([]);
-  const [loadingChildren, setLoadingChildren] = useState(false);
-  const [childrenError, setChildrenError] = useState<string | null>(null);
-  const [selectedSubfolder, setSelectedSubfolder] =
-    useState<SubfolderOption | null>(null);
-  const [selectedDate, setSelectedDate] = useState(getTodayDateInputValue);
-  const [newFolderName, setNewFolderName] = useState("");
-  const [creatingChildFolder, setCreatingChildFolder] = useState(false);
+  const [confirmedStack, setConfirmedStack] = useState<{ id: string; name: string }[]>([]);
+  const dateFolder = confirmedStack[confirmedStack.length - 1] ?? null;
   const [searchQuery, setSearchQuery] = useState("");
   const [loadingBusinesses, setLoadingBusinesses] = useState(false);
   const [businessesError, setBusinessesError] = useState<string | null>(null);
@@ -109,7 +89,6 @@ export function DriveApp() {
   const [offlineQueueCount, setOfflineQueueCount] = useState(0);
   const [flushingOffline, setFlushingOffline] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
-  const [appTab, setAppTab] = useState<AppTab>("upload");
 
   useEffect(() => {
     if (!isWelcomeDismissed()) {
@@ -219,96 +198,11 @@ export function DriveApp() {
 
   useEffect(() => {
     if (!selectedBusiness) {
-      setDateFolder(null);
-      setTargetError(null);
-      setPreparingTarget(false);
-      return;
+      setConfirmedStack([]);
     }
+  }, [selectedBusiness]);
 
-    let cancelled = false;
-    setPreparingTarget(true);
-    setTargetError(null);
-    setDateFolder(null);
-    setSelectedSubfolder(null);
-    setChildFolders([]);
 
-    void resolveVisitFolder(selectedBusiness, selectedDate)
-      .then((folder) => {
-        if (!cancelled) setDateFolder(folder);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setTargetError(
-            err instanceof Error
-              ? err.message
-              : "Tarihli klasör hazırlanamadı.",
-          );
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setPreparingTarget(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedBusiness?.id, selectedBusiness?.name, selectedDate]);
-
-  const loadChildFolders = useCallback(async (parentId: string) => {
-    setLoadingChildren(true);
-    setChildrenError(null);
-    try {
-      const res = await fetch(
-        `/api/drive/folders?parentFolderId=${encodeURIComponent(parentId)}`,
-      );
-      const { data, ok } = await parseApiResponse(res);
-      if (!ok || !data.ok) {
-        throw new Error(
-          typeof data.error === "string"
-            ? data.error
-            : "Alt klasörler yüklenemedi.",
-        );
-      }
-      const list = (data.folders as SubfolderOption[]) ?? [];
-      setChildFolders(list);
-      setSelectedSubfolder((prev) => {
-        if (!prev) return prev;
-        return list.find((f) => f.id === prev.id) ?? null;
-      });
-    } catch (err) {
-      setChildrenError(
-        err instanceof Error ? err.message : "Alt klasörler yüklenemedi.",
-      );
-    } finally {
-      setLoadingChildren(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!dateFolder?.id) {
-      setChildFolders([]);
-      setChildrenError(null);
-      setSelectedSubfolder(null);
-      return;
-    }
-
-    const parentId = dateFolder.id;
-    void loadChildFolders(parentId);
-
-    const interval = window.setInterval(() => {
-      void loadChildFolders(parentId);
-    }, 20_000);
-
-    function onFocus() {
-      void loadChildFolders(parentId);
-    }
-    window.addEventListener("focus", onFocus);
-
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [dateFolder?.id, loadChildFolders]);
 
   useEffect(() => {
     const queryLower = searchQuery.trim().toLowerCase();
@@ -335,15 +229,11 @@ export function DriveApp() {
       showToast({ message: "Önce bir işletme seçin.", variant: "error" });
       return false;
     }
-    if (preparingTarget || !dateFolder?.id) {
+    if (!dateFolder?.id) {
       showToast({
-        message: "Hedef klasör hazırlanıyor, lütfen birkaç saniye bekleyin.",
+        message: "Hedef klasör seçilmedi.",
         variant: "info",
       });
-      return false;
-    }
-    if (targetError) {
-      showToast({ message: targetError, variant: "error" });
       return false;
     }
     return true;
@@ -418,99 +308,20 @@ export function DriveApp() {
 
   function clearBusinessSelection() {
     setSelectedBusiness(null);
-    setDateFolder(null);
-    setTargetError(null);
-    setSelectedSubfolder(null);
-    setNewFolderName("");
-    setChildFolders([]);
-    setSelectedDate(getTodayDateInputValue());
+    setConfirmedStack([]);
     resetUploadUi();
-  }
-
-  async function resolveVisitFolder(
-    business: Business,
-    visitDateIso: string,
-  ): Promise<UploadTarget> {
-    const res = await fetch("/api/drive/visit-folder", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        businessFolderId: business.id,
-        businessName: business.name,
-        visitDate: visitDateIso,
-      }),
-    });
-    const { data, ok } = await parseApiResponse(res);
-    const folder = data.folder as UploadTarget | undefined;
-    if (!ok || !data.ok || !folder?.id) {
-      throw new Error(
-        typeof data.error === "string"
-          ? data.error
-          : "Ziyaret klasörü oluşturulamadı.",
-      );
-    }
-    return folder;
   }
 
   function getUploadTarget(): UploadTarget {
     if (!dateFolder?.id) {
-      throw new Error("Tarih klasörü henüz hazır değil.");
-    }
-    if (selectedSubfolder) {
-      return selectedSubfolder;
+      throw new Error("Lütfen önce bir hedef klasör seçin.");
     }
     return dateFolder;
   }
 
-  async function handleCreateChildFolder() {
-    if (!dateFolder?.id) return;
-    const name = newFolderName.trim();
-    if (!name) {
-      showToast({ message: "Alan adı gerekli.", variant: "error" });
-      return;
-    }
-
-    setCreatingChildFolder(true);
-    try {
-      const res = await fetch("/api/drive/folders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ parentFolderId: dateFolder.id, name }),
-      });
-      const { data, ok } = await parseApiResponse(res);
-      const folder = data.folder as SubfolderOption | undefined;
-      if (!ok || !data.ok || !folder?.id) {
-        throw new Error(
-          typeof data.error === "string"
-            ? data.error
-            : "Klasör oluşturulamadı.",
-        );
-      }
-      setNewFolderName("");
-      setSelectedSubfolder(folder);
-      await loadChildFolders(dateFolder.id);
-      showToast({
-        message: data.created
-          ? `"${folder.name}" oluşturuldu ve seçildi.`
-          : `"${folder.name}" seçildi.`,
-        variant: "success",
-      });
-    } catch (err) {
-      showToast({
-        message:
-          err instanceof Error ? err.message : "Klasör oluşturulamadı.",
-        variant: "error",
-      });
-    } finally {
-      setCreatingChildFolder(false);
-    }
-  }
-
   function handleSelectBusiness(business: Business) {
     setSelectedBusiness(business);
-    setSelectedSubfolder(null);
-    setNewFolderName("");
-    setChildFolders([]);
+    setConfirmedStack([{ id: business.id, name: business.name }]);
     setSearchQuery("");
     resetUploadUi();
   }
@@ -795,14 +606,10 @@ export function DriveApp() {
     }
   }
 
-  const visitDateLabel =
-    formatVisitDateFromInput(selectedDate) ?? formatVisitDate();
-  const destinationLabel =
-    selectedSubfolder?.name ?? "Tarih klasörü";
-  const targetPreview = selectedBusiness
-    ? `${selectedBusiness.name} > ${visitDateLabel} > ${destinationLabel}`
-    : visitDateLabel;
-  const targetReady = !!dateFolder && !preparingTarget && !targetError;
+  const targetPreview = confirmedStack.length > 0
+    ? confirmedStack.map((f) => f.name).join(" > ")
+    : selectedBusiness?.name ?? "";
+  const targetReady = !!dateFolder;
   const uploadBusy = isUploading || compressingPhotos;
 
   if (connection.status === "loading") {
@@ -876,37 +683,7 @@ export function DriveApp() {
         </div>
       )}
 
-      <div className="flex rounded-2xl border border-slate-200 bg-slate-100 p-1">
-        <button
-          type="button"
-          onClick={() => setAppTab("upload")}
-          className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition-all ${
-            appTab === "upload"
-              ? "bg-white text-blue-900 shadow-sm"
-              : "text-slate-600 hover:text-slate-800"
-          }`}
-        >
-          Yükle
-        </button>
-        <button
-          type="button"
-          onClick={() => setAppTab("browse")}
-          className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition-all ${
-            appTab === "browse"
-              ? "bg-white text-blue-900 shadow-sm"
-              : "text-slate-600 hover:text-slate-800"
-          }`}
-        >
-          Drive&apos;da Gör
-        </button>
-      </div>
-
-      {appTab === "browse" ? (
-        <DriveBrowser
-          rootFolderId={connection.rootFolderId}
-          rootFolderName={connection.rootFolderName}
-        />
-      ) : !selectedBusiness ? (
+      {!selectedBusiness ? (
         <>
           <BusinessPicker
             connection={connection}
@@ -932,42 +709,13 @@ export function DriveApp() {
         </>
       ) : (
         <>
-          <button
-            type="button"
-            onClick={clearBusinessSelection}
-            disabled={isUploading}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50"
-          >
-            ← İşletmeler
-          </button>
-
-          <VisitDatePicker
-            value={selectedDate}
-            onChange={setSelectedDate}
-            disabled={uploadBusy || preparingTarget}
-            targetPreview={targetPreview}
-          />
-
-          <UploadTargetBar
-            businessName={selectedBusiness.name}
-            visitDateLabel={visitDateLabel}
-            destinationLabel={destinationLabel}
-            preparing={preparingTarget}
-            ready={targetReady}
-            error={targetError}
-            childFolders={childFolders}
-            loadingChildren={loadingChildren}
-            childrenError={childrenError}
-            selectedSubfolderId={selectedSubfolder?.id ?? null}
-            onSelectSubfolder={setSelectedSubfolder}
-            newFolderName={newFolderName}
-            onNewFolderNameChange={setNewFolderName}
-            onCreateFolder={() => void handleCreateChildFolder()}
-            creatingFolder={creatingChildFolder}
-            disabled={uploadBusy}
-            onRefreshChildren={() => {
-              if (dateFolder?.id) void loadChildFolders(dateFolder.id);
-            }}
+          <UploadFolderPicker
+            business={{ id: selectedBusiness.id, name: selectedBusiness.name }}
+            busy={uploadBusy}
+            stack={confirmedStack}
+            onStackChange={setConfirmedStack}
+            onGoBack={clearBusinessSelection}
+            uploadStatus={uploadState.status}
           />
 
           {showSuccess && (
