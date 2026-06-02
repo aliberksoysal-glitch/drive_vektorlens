@@ -20,25 +20,42 @@ export const metadata: Metadata = {
   applicationName: "VEKTÖR LENS",
   appleWebApp: {
     capable: true,
-    statusBarStyle: "default",
+    // black-translucent: status bar şeffaf olur, uygulama notch/Dynamic Island altına kadar uzar
+    // Bu olmazsa PWA'da üstte beyaz bir bant kalır
+    statusBarStyle: "black-translucent",
     title: "VEKTÖR LENS",
   },
   formatDetection: {
+    // iOS'ta telefon numarası algılama → otomatik mavi link → layout bozulması
     telephone: false,
+    email: false,
+    address: false,
   },
   manifest: "/manifest.json",
   icons: {
-    icon: "/icons/icon-192x192.png",
-    apple: "/icons/icon-192x192.png",
+    icon: [
+      { url: "/icons/icon-192x192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icons/icon-512x512.png", sizes: "512x512", type: "image/png" },
+    ],
+    // iOS homescreen icon — 180x180 modern iPhone standart boyutu
+    apple: [
+      { url: "/icons/icon-192x192.png", sizes: "192x192", type: "image/png" },
+    ],
   },
 };
 
 export const viewport: Viewport = {
-  themeColor: "#8acaec",
+  // light/dark mod için ayrı theme renkleri
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#eef5ff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0f172a" },
+  ],
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
+  // maximumScale 5 → iOS erişilebilirlik zoom'una izin ver (Apple önerisi)
+  // userScalable false → accessibility sorunları yaratabilir, kaldırıldı
+  maximumScale: 5,
+  // cover → notch/home indicator safe area'yı etkinleştirir
   viewportFit: "cover",
 };
 

@@ -250,44 +250,53 @@ export function FieldUploadPanel({
   targetReady,
   uploadBusy,
   onFileChange,
-  onPickPhotos,
 }: {
   fileInputRef: RefObject<HTMLInputElement | null>;
   uploadState: UploadState;
   targetReady: boolean;
   uploadBusy: boolean;
   onFileChange: (e: ChangeEvent<HTMLInputElement>) => void;
-  onPickPhotos: () => void;
+  onPickPhotos?: () => void;
 }) {
   const busy = uploadBusy || !targetReady;
   const isError = uploadState.status === "error";
 
   return (
     <section className="space-y-4">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*,video/mp4,video/quicktime,video/x-msvideo"
-        multiple
-        onChange={onFileChange}
-        className="sr-only"
-        aria-hidden
-        tabIndex={-1}
-      />
+      {/* Wrapper: relative konumlu buton üzerine native input bindiriliyor.
+          Mobil Safari/Chrome'da programatik .click() bazen güvenlik politikası
+          nedeniyle galeriyi açmıyor. Native dokunuş her zaman çalışır. */}
+      <div className="relative">
+        {/* Görsel buton — pointer-events:none, sadece görünüm için */}
+        <div
+          aria-hidden
+          className={[
+            "flex min-h-[42vh] w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-blue-600 bg-gradient-to-b from-blue-700 to-blue-900 px-6 py-8 text-center text-white shadow-xl shadow-blue-900/25 transition-transform pointer-events-none select-none",
+            busy ? "opacity-50" : "",
+          ].join(" ")}
+        >
+          <span className="text-xl font-bold tracking-tight sm:text-2xl">
+            📸 FOTOĞRAF VEYA VİDEO
+          </span>
+          <span className="max-w-sm text-sm font-medium text-blue-100">
+            Kamerayı aç veya galeriden medya seç
+          </span>
+        </div>
 
-      <button
-        type="button"
-        onClick={onPickPhotos}
-        disabled={busy}
-        className="flex min-h-[42vh] w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-blue-600 bg-gradient-to-b from-blue-700 to-blue-900 px-6 py-8 text-center text-white shadow-xl shadow-blue-900/25 transition-transform active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <span className="text-xl font-bold tracking-tight sm:text-2xl">
-          📸 FOTOĞRAF VEYA VİDEO
-        </span>
-        <span className="max-w-sm text-sm font-medium text-blue-100">
-          Kamerayı aç veya galeriden medya seç
-        </span>
-      </button>
+        {/* Native file input — butonun tam üstüne yerleştirildi, görünmez ama dokunulabilir.
+            Kullanıcının parmağı doğrudan bu input'a dokunuyor → mobilde her zaman galeri açılır. */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,video/mp4,video/quicktime,video/x-msvideo"
+          multiple
+          disabled={busy}
+          onChange={onFileChange}
+          className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:pointer-events-none"
+          aria-label="Fotoğraf veya video seç"
+          tabIndex={0}
+        />
+      </div>
 
       {isError && (
         <p className="rounded-xl bg-red-50 px-4 py-3 text-center text-sm text-red-600 ring-1 ring-red-200 whitespace-pre-line">

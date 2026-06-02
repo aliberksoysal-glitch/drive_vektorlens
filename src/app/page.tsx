@@ -4,7 +4,15 @@ import { VektorLensTitle } from "@/components/VektorLensTitle";
 
 export default function Home() {
   return (
-    <main className="relative z-0 min-h-dvh px-4 py-8 sm:px-6 sm:py-10">
+    <main
+      className="relative z-0 min-h-dvh px-4 py-8 sm:px-6 sm:py-10"
+      style={{
+        /* black-translucent status bar kullanıldığında içerik notch'un altından başlamalı */
+        paddingTop: "max(2rem, calc(env(safe-area-inset-top) + 1.5rem))",
+        /* home indicator (iPhone alt çubuğu) arkasında içerik kalmasın */
+        paddingBottom: "max(2rem, calc(env(safe-area-inset-bottom) + 1.5rem))",
+      }}
+    >
       <div className="mx-auto w-full max-w-md">
         <header className="mb-7 border-b border-sky-200/70 pb-6 text-center">
           <VektorLensLogo className="mb-4 h-[4.25rem] w-[4.25rem]" />

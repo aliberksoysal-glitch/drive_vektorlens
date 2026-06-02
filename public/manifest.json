@@ -1,14 +1,17 @@
 {
+  "id": "/",
   "name": "VEKTÖR LENS",
-  "short_name": "VEKTÖR LENS",
+  "short_name": "VL",
   "description": "Sahanın dijital gözü, verinin güvenli yolu.",
   "start_url": "/",
-  "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#8acaec",
-  "orientation": "portrait-primary",
   "scope": "/",
   "lang": "tr",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "background_color": "#eef5ff",
+  "theme_color": "#eef5ff",
+  "orientation": "portrait-primary",
+  "categories": ["business", "productivity"],
   "icons": [
     {
       "src": "/icons/icon-192x192.png",
