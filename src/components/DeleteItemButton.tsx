@@ -30,10 +30,10 @@ export function DeleteItemButton({
     e.preventDefault();
     e.stopPropagation();
 
-    const message =
-      itemKind === "klasör" || itemKind === "işletme"
-        ? `"${itemName}" klasörünü ve içindekileri silmek istediğinize emin misiniz?`
-        : `"${itemName}" öğesini silmek istediğinize emin misiniz?`;
+    const isFolderLike = itemKind === "klasör" || itemKind === "işletme";
+    const message = isFolderLike
+      ? `"${itemName}" klasörünü ve içindeki tüm dosyaları kalıcı olarak silmek üzeresiniz. Bu işlem geri alınamaz.`
+      : `"${itemName}" öğesini silmek istediğinize emin misiniz?`;
 
     const ok = await confirm({
       title: "Silme onayı",
@@ -41,6 +41,7 @@ export function DeleteItemButton({
       confirmLabel: "Sil",
       cancelLabel: "Vazgeç",
       variant: "danger",
+      requireTypedName: isFolderLike ? itemName : undefined,
     });
     if (!ok) return;
 

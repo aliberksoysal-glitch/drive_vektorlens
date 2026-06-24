@@ -52,16 +52,14 @@ type UploadState =
 
 type UploadFailure = { id: string; name: string; error: string };
 
+type AppMode = "upload" | "manage";
+
 class NetworkUploadError extends Error {
   override name = "NetworkUploadError";
   constructor(message = "Ağ bağlantısı kesildi.") {
     super(message);
   }
 }
-
-const MAX_MEDIA_ITEMS = 100;
-/** Vercel timeout riskini azaltmak için paket başına yükleme adedi */
-const UPLOAD_CHUNK_SIZE = 10;
 
 export function DriveApp() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -93,6 +91,7 @@ export function DriveApp() {
   const [flushingOffline, setFlushingOffline] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [updatesOpen, setUpdatesOpen] = useState(false);
+  const [appMode, setAppMode] = useState<AppMode>("upload");
 
   useEffect(() => {
     if (!isWelcomeDismissed()) {
@@ -107,6 +106,16 @@ export function DriveApp() {
     const timer = window.setTimeout(() => setShowSuccess(false), 3000);
     return () => clearTimeout(timer);
   }, [showSuccess]);
+
+  useEffect(() => {
+    if (!isUploading && !compressingPhotos) return;
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isUploading, compressingPhotos]);
 
   function handleWelcomeClose(dismissPermanently: boolean) {
     if (dismissPermanently) {
@@ -272,16 +281,7 @@ export function DriveApp() {
       return;
     }
 
-    let filesToUpload = mediaFiles;
-    if (filesToUpload.length > MAX_MEDIA_ITEMS) {
-      showToast({
-        message: `En fazla ${MAX_MEDIA_ITEMS} dosya. İlk ${MAX_MEDIA_ITEMS} dosya yüklenecek.`,
-        variant: "info",
-      });
-      filesToUpload = filesToUpload.slice(0, MAX_MEDIA_ITEMS);
-    }
-
-    const heicHint = filesToUpload.some(
+    const heicHint = mediaFiles.some(
       (f) =>
         /^image\/(heic|heif)/i.test(f.type) ||
         /\.(heic|heif)$/i.test(f.name),
@@ -295,7 +295,7 @@ export function DriveApp() {
     }
 
     try {
-      await performUpload(filesToUpload);
+      await performUpload(mediaFiles);
     } catch (err) {
       showToast({
         message:
@@ -532,61 +532,50 @@ export function DriveApp() {
     setUploadState({ status: "uploading", current: 0, total, failed });
 
     try {
-      for (let chunkStart = 0; chunkStart < files.length; chunkStart += UPLOAD_CHUNK_SIZE) {
-        const chunkRaw = files.slice(chunkStart, chunkStart + UPLOAD_CHUNK_SIZE);
+      for (let i = 0; i < files.length; i++) {
+        const globalIdx = i + 1;
+        const raw = files[i];
+        let file = raw;
 
-        const chunkHasImages = chunkRaw.some((f) => !isVideoFile(f));
-        if (chunkHasImages && !skipCompression) {
+        if (!skipCompression && !isVideoFile(raw)) {
           setCompressingPhotos(true);
-        }
-        let chunkFiles: File[];
-        try {
-          chunkFiles = await Promise.all(
-            chunkRaw.map(async (f) => {
-              if (skipCompression || isVideoFile(f)) return f;
-              return compressImageForUpload(f);
-            }),
-          );
-        } finally {
-          if (chunkHasImages && !skipCompression) {
+          try {
+            file = await compressImageForUpload(raw);
+          } finally {
             setCompressingPhotos(false);
           }
         }
 
-        for (let j = 0; j < chunkFiles.length; j++) {
-          const globalIdx = chunkStart + j + 1;
-          const file = chunkFiles[j];
-          const photo = {
-            id: `upload-${runId}-${globalIdx}`,
-            file,
-          };
-          const uploadName = buildPhotoUploadFileName(template, {
-            business: selectedBusiness.name,
-            visit: visitLabel,
-            index: globalIdx,
-            originalName: file.name,
-          });
+        const photo = {
+          id: `upload-${runId}-${globalIdx}`,
+          file,
+        };
+        const uploadName = buildPhotoUploadFileName(template, {
+          business: selectedBusiness.name,
+          visit: visitLabel,
+          index: globalIdx,
+          originalName: file.name,
+        });
 
-          try {
-            await uploadSinglePhoto(file, uploadTarget.id, uploadName);
-            uploaded++;
-          } catch (reason) {
-            await recordUploadFailure(
-              reason,
-              photo,
-              uploadTarget,
-              uploadName,
-              failed,
-            );
-          }
-
-          setUploadState({
-            status: "uploading",
-            current: uploaded,
-            total,
+        try {
+          await uploadSinglePhoto(file, uploadTarget.id, uploadName);
+          uploaded++;
+        } catch (reason) {
+          await recordUploadFailure(
+            reason,
+            photo,
+            uploadTarget,
+            uploadName,
             failed,
-          });
+          );
         }
+
+        setUploadState({
+          status: "uploading",
+          current: uploaded,
+          total,
+          failed,
+        });
       }
 
       if (failed.length === 0) {
@@ -679,6 +668,12 @@ export function DriveApp() {
 
   return (
     <div className="space-y-5">
+      <AppModeToggle
+        mode={appMode}
+        disabled={uploadBusy}
+        onChange={setAppMode}
+      />
+
       {offlineQueueCount > 0 && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -712,6 +707,7 @@ export function DriveApp() {
             onSelectBusiness={handleSelectBusiness}
             onOpenAddModal={openAddBusinessModal}
             onOpenUpdatesModal={() => setUpdatesOpen(true)}
+            manageMode={appMode === "manage"}
           />
           <AddBusinessModal
             open={isAddModalOpen}
@@ -723,6 +719,15 @@ export function DriveApp() {
             onClose={closeAddBusinessModal}
           />
         </>
+      ) : appMode === "manage" ? (
+        <UploadFolderPicker
+          business={{ id: selectedBusiness.id, name: selectedBusiness.name }}
+          busy={uploadBusy}
+          stack={confirmedStack}
+          onStackChange={setConfirmedStack}
+          onGoBack={clearBusinessSelection}
+          manageMode
+        />
       ) : (
         <>
           <UploadFolderPicker
@@ -774,6 +779,55 @@ export function DriveApp() {
   );
 }
 
+function AppModeToggle({
+  mode,
+  disabled,
+  onChange,
+}: {
+  mode: AppMode;
+  disabled?: boolean;
+  onChange: (mode: AppMode) => void;
+}) {
+  return (
+    <div
+      className="surface-card flex p-1"
+      role="tablist"
+      aria-label="Uygulama modu"
+    >
+      <button
+        type="button"
+        role="tab"
+        aria-selected={mode === "upload"}
+        disabled={disabled}
+        onClick={() => onChange("upload")}
+        className={[
+          "flex-1 rounded-xl px-3 py-2.5 text-sm font-semibold transition-colors disabled:opacity-50",
+          mode === "upload"
+            ? "bg-blue-800 text-white shadow-sm"
+            : "text-slate-600 hover:bg-slate-50",
+        ].join(" ")}
+      >
+        📸 Yükle
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={mode === "manage"}
+        disabled={disabled}
+        onClick={() => onChange("manage")}
+        className={[
+          "flex-1 rounded-xl px-3 py-2.5 text-sm font-semibold transition-colors disabled:opacity-50",
+          mode === "manage"
+            ? "bg-slate-800 text-white shadow-sm"
+            : "text-slate-600 hover:bg-slate-50",
+        ].join(" ")}
+      >
+        🗂️ Yönet
+      </button>
+    </div>
+  );
+}
+
 function UploadLoadingOverlay({
   uploaded,
   total,
@@ -783,12 +837,13 @@ function UploadLoadingOverlay({
   total: number;
   compressing: boolean;
 }) {
-  const label =
-    compressing && uploaded === 0
-      ? "Görseller hazırlanıyor…"
-      : total > 0
-        ? `Medya yükleniyor... (${uploaded} / ${total})`
-        : "Medya yükleniyor...";
+  const label = compressing
+    ? total > 0
+      ? `Görseller hazırlanıyor… (${uploaded} / ${total})`
+      : "Görseller hazırlanıyor…"
+    : total > 0
+      ? `Medya yükleniyor... (${uploaded} / ${total})`
+      : "Medya yükleniyor...";
 
   return (
     <div
@@ -841,6 +896,7 @@ function BusinessPicker({
   onSelectBusiness,
   onOpenAddModal,
   onOpenUpdatesModal,
+  manageMode = false,
 }: {
   connection: Extract<ConnectionState, { status: "connected" }>;
   searchQuery: string;
@@ -853,6 +909,7 @@ function BusinessPicker({
   onSelectBusiness: (b: Business) => void;
   onOpenAddModal: () => void;
   onOpenUpdatesModal: () => void;
+  manageMode?: boolean;
 }) {
   const [sortOrder, setSortOrder] = useState<"az" | "za" | "new">("az");
 
@@ -867,9 +924,13 @@ function BusinessPicker({
       <div className="mb-4 border-b border-slate-100 pb-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold text-blue-900">İşletme seçimi</h2>
+            <h2 className="text-lg font-semibold text-blue-900">
+              {manageMode ? "İşletme yönetimi" : "İşletme seçimi"}
+            </h2>
             <p className="mt-0.5 text-sm text-slate-600">
-              Yükleme yapılacak işletmeyi seçin
+              {manageMode
+                ? "Silinecek işletmeyi seçin veya içeriğini yönetin"
+                : "Yükleme yapılacak işletmeyi seçin"}
             </p>
           </div>
           <div className="flex flex-col items-end gap-1.5 shrink-0">
@@ -1000,14 +1061,16 @@ function BusinessPicker({
                     </span>
                     <ChevronIcon className="h-5 w-5 shrink-0 text-slate-300 group-hover:text-blue-700" />
                   </button>
-                  <div className="pr-4 flex items-center shrink-0">
-                    <DeleteItemButton
-                      itemId={business.id}
-                      itemName={business.name}
-                      itemKind="işletme"
-                      onDeleted={onRefreshBusinesses}
-                    />
-                  </div>
+                  {manageMode && (
+                    <div className="pr-4 flex items-center shrink-0">
+                      <DeleteItemButton
+                        itemId={business.id}
+                        itemName={business.name}
+                        itemKind="işletme"
+                        onDeleted={onRefreshBusinesses}
+                      />
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>
@@ -1228,8 +1291,15 @@ function UpdatesModal({
     },
     {
       badge: "Yeni",
-      title: "İşletme Silme Yeteneği",
-      description: "Drive üzerindeki işletme klasörlerini ve içlerindeki tüm verileri doğrudan ana ekrandan silebilirsiniz.",
+      title: "Ayrı Yönetim Modu",
+      description: "Silme ve yeniden adlandırma artık Yönet sekmesinde. Yükleme ekranında yanlışlıkla silme riski yok.",
+      date: "Haziran 2026",
+      icon: "🛡️",
+    },
+    {
+      badge: "Güncelleme",
+      title: "İşletme Silme",
+      description: "İşletme klasörlerini Yönet modundan silebilirsiniz; onay için işletme adını yazmanız gerekir.",
       date: "Haziran 2026",
       icon: "🗑️",
     },

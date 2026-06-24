@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-/** İstemci medyayı 10'arlı paketler halinde sıralı yükler; bu rota istek başına tek dosya alır. */
+/** İstemci medyayı sırayla tek tek yükler; bu rota istek başına tek dosya alır. */
 
 function sanitizeFileName(name: string): string {
   const s = name

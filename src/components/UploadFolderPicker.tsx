@@ -30,6 +30,8 @@ type Props = {
   onStackChange: (stack: PickerFolder[]) => void;
   onGoBack?: () => void;
   uploadStatus?: string;
+  /** true: silme ve yeniden adlandırma gösterilir */
+  manageMode?: boolean;
 };
 
 export function UploadFolderPicker({
@@ -39,6 +41,7 @@ export function UploadFolderPicker({
   onStackChange,
   onGoBack,
   uploadStatus,
+  manageMode = false,
 }: Props) {
   const { showToast } = useToast();
   const [subfolders, setSubfolders] = useState<PickerFolder[]>([]);
@@ -216,10 +219,12 @@ export function UploadFolderPicker({
     <div className="surface-card p-4 space-y-4">
       <div>
         <p className="text-xs font-semibold uppercase tracking-wide text-blue-800">
-          Klasör seç
+          {manageMode ? "İçerik yönetimi" : "Klasör seç"}
         </p>
         <p className="mt-0.5 text-sm text-slate-600">
-          İşletme içinde klasörlere girip yükleme hedefini seçin
+          {manageMode
+            ? "Dosya ve klasörleri yeniden adlandırın veya silin"
+            : "İşletme içinde klasörlere girip yükleme hedefini seçin"}
         </p>
       </div>
 
@@ -289,23 +294,27 @@ export function UploadFolderPicker({
                         <span className="min-w-0 flex-1 truncate">{f.name}</span>
                         <span className="shrink-0 text-xs text-blue-700 bg-blue-50 px-2 py-1 rounded-md font-semibold">İçine Git →</span>
                       </button>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => setRenameTarget({ id: f.id, name: f.name, kind: "folder" })}
-                        className="mr-1 shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-blue-800 disabled:opacity-50"
-                        aria-label={`${f.name} yeniden adlandır`}
-                        title="Yeniden adlandır"
-                      >
-                        <PencilIcon className="h-4 w-4" />
-                      </button>
-                      <DeleteItemButton
-                        itemId={f.id}
-                        itemName={f.name}
-                        itemKind="klasör"
-                        onDeleted={() => void loadChildren(current.id, { append: false })}
-                        className="mr-2"
-                      />
+                      {manageMode && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => setRenameTarget({ id: f.id, name: f.name, kind: "folder" })}
+                            className="mr-1 shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-blue-800 disabled:opacity-50"
+                            aria-label={`${f.name} yeniden adlandır`}
+                            title="Yeniden adlandır"
+                          >
+                            <PencilIcon className="h-4 w-4" />
+                          </button>
+                          <DeleteItemButton
+                            itemId={f.id}
+                            itemName={f.name}
+                            itemKind="klasör"
+                            onDeleted={() => void loadChildren(current.id, { append: false })}
+                            className="mr-2"
+                          />
+                        </>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -347,25 +356,29 @@ export function UploadFolderPicker({
                             {file.name}
                           </span>
                         </button>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          className="absolute left-1 top-1 rounded-full bg-white/90 p-1 text-slate-600 shadow-sm hover:text-blue-800 disabled:opacity-50"
-                          aria-label="Yeniden adlandır"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setRenameTarget({ id: file.id, name: file.name, kind: "file" });
-                          }}
-                        >
-                          <PencilIcon className="h-3.5 w-3.5" />
-                        </button>
-                        <DeleteItemButton
-                          itemId={file.id}
-                          itemName={file.name}
-                          itemKind="fotoğraf"
-                          onDeleted={() => void loadChildren(current.id, { append: false })}
-                          className="absolute right-1 top-1 bg-white/90 shadow-sm"
-                        />
+                        {manageMode && (
+                          <>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              className="absolute left-1 top-1 rounded-full bg-white/90 p-1 text-slate-600 shadow-sm hover:text-blue-800 disabled:opacity-50"
+                              aria-label="Yeniden adlandır"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRenameTarget({ id: file.id, name: file.name, kind: "file" });
+                              }}
+                            >
+                              <PencilIcon className="h-3.5 w-3.5" />
+                            </button>
+                            <DeleteItemButton
+                              itemId={file.id}
+                              itemName={file.name}
+                              itemKind="fotoğraf"
+                              onDeleted={() => void loadChildren(current.id, { append: false })}
+                              className="absolute right-1 top-1 bg-white/90 shadow-sm"
+                            />
+                          </>
+                        )}
                       </div>
                     ))}
                 </div>
@@ -399,22 +412,26 @@ export function UploadFolderPicker({
                             {file.name}
                           </span>
                         )}
-                        <button
-                          type="button"
-                          disabled={busy}
-                          className="mr-1 shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-blue-800 disabled:opacity-50"
-                          aria-label="Yeniden adlandır"
-                          onClick={() => setRenameTarget({ id: file.id, name: file.name, kind: "file" })}
-                        >
-                          <PencilIcon className="h-4 w-4" />
-                        </button>
-                        <DeleteItemButton
-                          itemId={file.id}
-                          itemName={file.name}
-                          itemKind="dosya"
-                          onDeleted={() => void loadChildren(current.id, { append: false })}
-                          className="mr-2"
-                        />
+                        {manageMode && (
+                          <>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              className="mr-1 shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-blue-800 disabled:opacity-50"
+                              aria-label="Yeniden adlandır"
+                              onClick={() => setRenameTarget({ id: file.id, name: file.name, kind: "file" })}
+                            >
+                              <PencilIcon className="h-4 w-4" />
+                            </button>
+                            <DeleteItemButton
+                              itemId={file.id}
+                              itemName={file.name}
+                              itemKind="dosya"
+                              onDeleted={() => void loadChildren(current.id, { append: false })}
+                              className="mr-2"
+                            />
+                          </>
+                        )}
                       </li>
                     ))}
                 </ul>
@@ -513,17 +530,20 @@ export function UploadFolderPicker({
             </button>
           )
         )}
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => setRenameTarget({ id: current.id, name: current.name, kind: "folder" })}
-          className="btn-secondary py-2.5 text-sm sm:flex-1"
-        >
-          Açık klasörü yeniden adlandır
-        </button>
+        {manageMode && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setRenameTarget({ id: current.id, name: current.name, kind: "folder" })}
+            className="btn-secondary py-2.5 text-sm sm:flex-1"
+          >
+            Açık klasörü yeniden adlandır
+          </button>
+        )}
       </div>
 
-      <RenameItemDialog
+      {manageMode && (
+        <RenameItemDialog
         open={!!renameTarget}
         itemId={renameTarget?.id ?? ""}
         itemName={renameTarget?.name ?? ""}
@@ -534,7 +554,8 @@ export function UploadFolderPicker({
           setRenameTarget(null);
           void loadChildren(current.id, { append: false });
         }}
-      />
+        />
+      )}
 
       {previewFile && (
         <motion.div
@@ -553,6 +574,19 @@ export function UploadFolderPicker({
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
+              {manageMode && (
+                <DeleteItemButton
+                  itemId={previewFile.id}
+                  itemName={previewFile.name}
+                  itemKind="fotoğraf"
+                  onDeleted={() => {
+                    setPreviewFile(null);
+                    void loadChildren(current.id, { append: false });
+                  }}
+                  iconOnly={false}
+                  className="!text-white hover:!bg-white/10"
+                />
+              )}
               <button
                 type="button"
                 onClick={() => setPreviewFile(null)}

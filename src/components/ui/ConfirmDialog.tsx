@@ -16,6 +16,8 @@ export type ConfirmOptions = {
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: "danger" | "default";
+  /** Doluysa kullanıcı bu metni yazmadan onaylayamaz. */
+  requireTypedName?: string;
 };
 
 type Pending = {
@@ -34,6 +36,87 @@ export function useConfirmDialog() {
   if (!ctx)
     throw new Error("useConfirmDialog must be used within ConfirmDialogProvider");
   return ctx;
+}
+
+function ConfirmDialogBody({
+  pending,
+  onClose,
+}: {
+  pending: Pending;
+  onClose: (result: boolean) => void;
+}) {
+  const [typedName, setTypedName] = useState("");
+  const requiredName = pending.options.requireTypedName?.trim() ?? "";
+  const typedOk =
+    !requiredName || typedName.trim() === requiredName;
+
+  useEffect(() => {
+    setTypedName("");
+  }, [pending]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[110] flex items-center justify-center p-4"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="confirm-title"
+      aria-describedby="confirm-desc"
+    >
+      <button
+        type="button"
+        className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm"
+        onClick={() => onClose(false)}
+        aria-label="İptal"
+      />
+      <div className="relative w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
+        <h2
+          id="confirm-title"
+          className="text-lg font-semibold text-slate-900"
+        >
+          {pending.options.title}
+        </h2>
+        <p id="confirm-desc" className="mt-2 text-sm text-slate-600">
+          {pending.options.message}
+        </p>
+        {requiredName && (
+          <label className="mt-4 block">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Onay için adı yazın
+            </span>
+            <input
+              type="text"
+              value={typedName}
+              onChange={(e) => setTypedName(e.target.value)}
+              placeholder={requiredName}
+              autoComplete="off"
+              className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-base outline-none focus:border-red-500 focus:ring-2 focus:ring-red-500/15"
+            />
+          </label>
+        )}
+        <div className="mt-5 flex gap-3">
+          <Button
+            type="button"
+            variant="neutral"
+            className="flex-1"
+            onClick={() => onClose(false)}
+          >
+            {pending.options.cancelLabel ?? "İptal"}
+          </Button>
+          <Button
+            type="button"
+            variant={
+              pending.options.variant === "danger" ? "danger" : "primary"
+            }
+            className="flex-1"
+            disabled={!typedOk}
+            onClick={() => onClose(true)}
+          >
+            {pending.options.confirmLabel ?? "Tamam"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
@@ -67,51 +150,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
     <ConfirmContext.Provider value={{ confirm }}>
       {children}
       {pending && (
-        <div
-          className="fixed inset-0 z-[110] flex items-center justify-center p-4"
-          role="alertdialog"
-          aria-modal="true"
-          aria-labelledby="confirm-title"
-          aria-describedby="confirm-desc"
-        >
-          <button
-            type="button"
-            className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm"
-            onClick={() => close(false)}
-            aria-label="İptal"
-          />
-          <div className="relative w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
-            <h2
-              id="confirm-title"
-              className="text-lg font-semibold text-slate-900"
-            >
-              {pending.options.title}
-            </h2>
-            <p id="confirm-desc" className="mt-2 text-sm text-slate-600">
-              {pending.options.message}
-            </p>
-            <div className="mt-5 flex gap-3">
-              <Button
-                type="button"
-                variant="neutral"
-                className="flex-1"
-                onClick={() => close(false)}
-              >
-                {pending.options.cancelLabel ?? "İptal"}
-              </Button>
-              <Button
-                type="button"
-                variant={
-                  pending.options.variant === "danger" ? "danger" : "primary"
-                }
-                className="flex-1"
-                onClick={() => close(true)}
-              >
-                {pending.options.confirmLabel ?? "Tamam"}
-              </Button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialogBody pending={pending} onClose={close} />
       )}
     </ConfirmContext.Provider>
   );
