@@ -10,6 +10,7 @@
 
 # testing
 /coverage
+/e2e/fixtures/bulk-images/
 
 # next.js
 /.next/
