@@ -1,5 +1,5 @@
 const WELCOME_DISMISSED_KEY = "vl_welcome_dismissed_v1";
-const UPDATES_DISMISSED_KEY = "vl_updates_dismissed_v1_2_0";
+const UPDATES_DISMISSED_KEY = "vl_updates_dismissed_v1_2_1";
 
 export function isWelcomeDismissed(): boolean {
   if (typeof window === "undefined") return false;

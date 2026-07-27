@@ -1539,6 +1539,14 @@ function UpdatesModal({
 }) {
   const UPDATES = [
     {
+      badge: "Düzeltme",
+      title: "Toplu Yükleme Güvenilirliği",
+      description:
+        "50 fotoğraf seçip yalnızca bir kısmının yüklenmesi sorunu giderildi. Bellek kullanımı iyileştirildi, geçici ağ hatalarında otomatik yeniden deneme eklendi. Yüklenemeyen dosyalar için uyarı ekranı ve tek dokunuşla Yeniden dene seçeneği sunuluyor.",
+      date: "Temmuz 2026",
+      icon: "📷",
+    },
+    {
       badge: "Yeni",
       title: "Tek Ekran Entegrasyonu",
       description: "Sekmeler tamamen kaldırıldı. İşletme seçildiğinde gezgin ve yükleme paneli tek bir akışta bir arada sunulur.",
@@ -1598,7 +1606,7 @@ function UpdatesModal({
             <span className="rounded-full bg-blue-500/30 px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider text-blue-200">
               Versiyon Güncellemesi
             </span>
-            <span className="text-xs text-blue-200 font-medium">v1.2.0</span>
+            <span className="text-xs text-blue-200 font-medium">v1.2.1</span>
           </div>
           <h2
             id="updates-modal-title"
@@ -1621,7 +1629,11 @@ function UpdatesModal({
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm font-bold text-slate-900">{up.title}</h3>
                   <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                    up.badge === "Yeni" ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/10" : "bg-blue-50 text-blue-700 ring-1 ring-blue-600/10"
+                    up.badge === "Yeni"
+                      ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/10"
+                      : up.badge === "Düzeltme"
+                        ? "bg-amber-50 text-amber-800 ring-1 ring-amber-600/10"
+                        : "bg-blue-50 text-blue-700 ring-1 ring-blue-600/10"
                   }`}>
                     {up.badge}
                   </span>
