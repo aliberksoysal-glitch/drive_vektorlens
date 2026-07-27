@@ -114,6 +114,9 @@ test.describe("100+ fotoğraf yükleme", () => {
 
     await page.getByLabel("Fotoğraf veya video seç").setInputFiles(filePaths);
 
+    await expect(page.getByText(`${BULK_COUNT} medya yükleme için hazır`)).toBeVisible();
+    await page.getByRole("button", { name: `Yüklemeyi başlat (${BULK_COUNT})` }).click();
+
     await expect.poll(() => uploadCount, { timeout: 480_000 }).toBe(BULK_COUNT);
 
     await expect(page.getByText("Başarıyla Yüklendi")).toBeVisible({

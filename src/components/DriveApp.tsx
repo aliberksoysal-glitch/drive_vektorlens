@@ -18,6 +18,7 @@ import {
   buildPhotoUploadFileName,
   getUploadFilenameTemplate,
 } from "@/lib/client/uploadFilename";
+import { mergeMediaFileLists } from "@/lib/client/mergeMediaFiles";
 import { UploadFolderPicker } from "@/components/UploadFolderPicker";
 import { FieldUploadPanel } from "@/components/FieldUploadUI";
 import { WelcomeModal } from "@/components/WelcomeModal";
@@ -52,6 +53,14 @@ type UploadState =
 
 type UploadFailure = { id: string; name: string; error: string };
 
+type UploadReport = {
+  uploaded: number;
+  total: number;
+  failed: UploadFailure[];
+  retryableCount: number;
+  queuedCount: number;
+};
+
 type AppMode = "upload" | "manage";
 
 class NetworkUploadError extends Error {
@@ -59,6 +68,17 @@ class NetworkUploadError extends Error {
   constructor(message = "Ağ bağlantısı kesildi.") {
     super(message);
   }
+}
+
+/** Sunucu tarafı geçici hata (429/5xx) — yeniden denenebilir. */
+class RetryableUploadError extends Error {
+  override name = "RetryableUploadError";
+}
+
+const UPLOAD_ATTEMPTS = 3;
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function DriveApp() {
@@ -92,6 +112,8 @@ export function DriveApp() {
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [updatesOpen, setUpdatesOpen] = useState(false);
   const [appMode, setAppMode] = useState<AppMode>("upload");
+  const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
+  const [uploadReport, setUploadReport] = useState<UploadReport | null>(null);
 
   useEffect(() => {
     if (!isWelcomeDismissed()) {
@@ -238,12 +260,18 @@ export function DriveApp() {
     }
   }, [searchQuery, businesses]);
 
+  useEffect(() => {
+    setPendingUploadFiles([]);
+  }, [dateFolder?.id]);
+
   function resetFileInput() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   function resetUploadUi() {
     setUploadState({ status: "idle" });
+    setPendingUploadFiles([]);
+    setUploadReport(null);
     resetFileInput();
   }
 
@@ -270,7 +298,9 @@ export function DriveApp() {
       return;
     }
 
-    const mediaFiles = Array.from(picked).filter(isUploadableMediaFile);
+    const pickedFiles = Array.from(picked);
+    const mediaFiles = pickedFiles.filter(isUploadableMediaFile);
+    const unsupported = pickedFiles.length - mediaFiles.length;
 
     if (!mediaFiles.length) {
       showToast({
@@ -294,17 +324,64 @@ export function DriveApp() {
       });
     }
 
+    const merged = mergeMediaFileLists(pendingUploadFiles, mediaFiles);
+    const added = merged.length - pendingUploadFiles.length;
+    const duplicates = mediaFiles.length - added;
+    setPendingUploadFiles(merged);
+
+    // Galeri bazen seçilenden az dosya döndürür; sayıyı göstererek fark edilir kılıyoruz.
+    const details = [
+      duplicates > 0 ? `${duplicates} yinelenen atlandı` : null,
+      unsupported > 0 ? `${unsupported} desteklenmeyen dosya atlandı` : null,
+    ].filter(Boolean);
+
+    if (added > 0) {
+      showToast({
+        message:
+          `Galeriden ${pickedFiles.length} dosya geldi, ${added} tanesi eklendi. ` +
+          `Toplam: ${merged.length}` +
+          (details.length ? `\n(${details.join(", ")})` : ""),
+        variant: "success",
+      });
+    } else {
+      showToast({
+        message: "Seçilen dosyalar zaten listede.",
+        variant: "info",
+      });
+    }
+    e.target.value = "";
+  }
+
+  async function handleStartPendingUpload() {
+    if (!pendingUploadFiles.length) return;
+    if (!canStartUpload()) return;
+
+    const files = [...pendingUploadFiles];
+    setPendingUploadFiles([]);
+    setUploadReport(null);
+
     try {
-      await performUpload(mediaFiles);
+      const { retryableFiles } = await performUpload(files);
+      if (retryableFiles.length) setPendingUploadFiles(retryableFiles);
     } catch (err) {
+      setPendingUploadFiles(files);
       showToast({
         message:
           err instanceof Error ? err.message : "Yükleme başlatılamadı.",
         variant: "error",
       });
-    } finally {
-      e.target.value = "";
     }
+  }
+
+  function handleRetryFailedUploads() {
+    setUploadReport(null);
+    void handleStartPendingUpload();
+  }
+
+  function handleClearPendingUpload() {
+    setPendingUploadFiles([]);
+    resetFileInput();
+    showToast({ message: "Seçim temizlendi.", variant: "info" });
   }
 
   function openAddBusinessModal() {
@@ -408,13 +485,35 @@ export function DriveApp() {
 
     const { data, ok } = await parseApiResponse(res);
     if (!ok || !data.ok) {
-      throw new Error(
+      const message =
         typeof data.error === "string"
           ? data.error
-          : `${file.name} yüklenemedi.`,
-      );
+          : `${file.name} yüklenemedi.`;
+      if (res.status === 429 || res.status >= 500) {
+        throw new RetryableUploadError(message);
+      }
+      throw new Error(message);
     }
     return data;
+  }
+
+  /** Geçici ağ/sunucu hatalarında artan bekleme ile yeniden dener. */
+  async function uploadWithRetry(
+    file: File,
+    folderId: string,
+    uploadName: string,
+  ) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await uploadSinglePhoto(file, folderId, uploadName);
+      } catch (err) {
+        const retryable =
+          err instanceof NetworkUploadError ||
+          err instanceof RetryableUploadError;
+        if (!retryable || attempt >= UPLOAD_ATTEMPTS) throw err;
+        await delay(800 * attempt);
+      }
+    }
   }
 
   async function handleFlushOfflineQueue() {
@@ -460,13 +559,14 @@ export function DriveApp() {
     }
   }
 
+  /** Çevrimdışı kuyruğa alındıysa `true` döner (tekrar denemeye gerek yok). */
   async function recordUploadFailure(
     reason: unknown,
     photo: { id: string; file: File },
     uploadTarget: UploadTarget,
     uploadName: string,
     failed: UploadFailure[],
-  ) {
+  ): Promise<boolean> {
     if (reason instanceof NetworkUploadError) {
       try {
         await enqueueOfflineUpload({
@@ -481,7 +581,7 @@ export function DriveApp() {
           name: photo.file.name,
           error: "Çevrimdışı kuyruğa alındı",
         });
-        return;
+        return true;
       } catch {
         /* fall through */
       }
@@ -492,13 +592,15 @@ export function DriveApp() {
       error:
         reason instanceof Error ? reason.message : "Yükleme başarısız",
     });
+    return false;
   }
 
   async function performUpload(
     files: File[],
     opts?: { manageOverlay?: boolean; skipCompression?: boolean },
-  ) {
-    if (!files.length || !selectedBusiness) return;
+  ): Promise<{ uploaded: number; retryableFiles: File[] }> {
+    const empty = { uploaded: 0, retryableFiles: [] as File[] };
+    if (!files.length || !selectedBusiness) return empty;
 
     const manageOverlay = opts?.manageOverlay !== false;
     const skipCompression = opts?.skipCompression === true;
@@ -514,7 +616,7 @@ export function DriveApp() {
             : "Yükleme hedefi hazırlanamadı.",
         variant: "error",
       });
-      return;
+      return empty;
     }
 
     if (manageOverlay) {
@@ -524,6 +626,7 @@ export function DriveApp() {
 
     const total = files.length;
     const failed: UploadFailure[] = [];
+    const retryableFiles: File[] = [];
     let uploaded = 0;
     const template = getUploadFilenameTemplate();
     const visitLabel = uploadTarget.name;
@@ -534,40 +637,43 @@ export function DriveApp() {
     try {
       for (let i = 0; i < files.length; i++) {
         const globalIdx = i + 1;
-        const raw = files[i];
-        let file = raw;
+        const raw = files[i]!;
+        const photoId = `upload-${runId}-${globalIdx}`;
+        let uploadName = raw.name;
 
-        if (!skipCompression && !isVideoFile(raw)) {
-          setCompressingPhotos(true);
-          try {
-            file = await compressImageForUpload(raw);
-          } finally {
-            setCompressingPhotos(false);
-          }
-        }
-
-        const photo = {
-          id: `upload-${runId}-${globalIdx}`,
-          file,
-        };
-        const uploadName = buildPhotoUploadFileName(template, {
-          business: selectedBusiness.name,
-          visit: visitLabel,
-          index: globalIdx,
-          originalName: file.name,
-        });
-
+        // Tek bir dosyadaki beklenmedik hata (sıkıştırma çökmesi, bozuk dosya…)
+        // partinin geri kalanını iptal etmemeli.
         try {
-          await uploadSinglePhoto(file, uploadTarget.id, uploadName);
+          let file = raw;
+          if (!skipCompression && !isVideoFile(raw)) {
+            setCompressingPhotos(true);
+            try {
+              file = await compressImageForUpload(raw);
+            } catch {
+              file = raw;
+            } finally {
+              setCompressingPhotos(false);
+            }
+          }
+
+          uploadName = buildPhotoUploadFileName(template, {
+            business: selectedBusiness.name,
+            visit: visitLabel,
+            index: globalIdx,
+            originalName: file.name,
+          });
+
+          await uploadWithRetry(file, uploadTarget.id, uploadName);
           uploaded++;
         } catch (reason) {
-          await recordUploadFailure(
+          const queued = await recordUploadFailure(
             reason,
-            photo,
+            { id: photoId, file: raw },
             uploadTarget,
             uploadName,
             failed,
           );
+          if (!queued) retryableFiles.push(raw);
         }
 
         setUploadState({
@@ -576,6 +682,9 @@ export function DriveApp() {
           total,
           failed,
         });
+
+        // Mobil tarayıcıya bellek boşaltma/çizim fırsatı ver.
+        await delay(0);
       }
 
       if (failed.length === 0) {
@@ -584,23 +693,31 @@ export function DriveApp() {
         setShowSuccess(true);
         playSound("success");
         resetUploadUi();
-        return;
+        return { uploaded, retryableFiles };
       }
+
+      const queuedCount = failed.length - retryableFiles.length;
+      const retryHint = retryableFiles.length
+        ? `\n\n${retryableFiles.length} adet listede tutuldu; "Yüklemeyi başlat" ile tekrar deneyebilirsiniz.`
+        : "";
 
       setUploadState({
         status: "error",
         message:
           `${uploaded} / ${total} adet fotoğraf Google Drive'a yüklenmiştir.\n\n` +
-          `${failed.length} adet yüklenemedi veya çevrimdışı kuyruğa alındı.`,
+          `${failed.length} adet yüklenemedi veya çevrimdışı kuyruğa alındı.` +
+          retryHint,
         failed,
       });
-      showToast({
-        message:
-          `Dikkat: ${failed.length} adet fotoğraf yüklenemedi.\n\n` +
-          `${uploaded} / ${total} adet fotoğraf aktarılmıştır.`,
-        variant: "error",
+      setUploadReport({
+        uploaded,
+        total,
+        failed,
+        retryableCount: retryableFiles.length,
+        queuedCount,
       });
       playSound("error");
+      return { uploaded, retryableFiles };
     } finally {
       if (manageOverlay) {
         setIsUploading(false);
@@ -748,7 +865,10 @@ export function DriveApp() {
             uploadState={uploadState}
             targetReady={targetReady}
             uploadBusy={uploadBusy}
+            pendingCount={pendingUploadFiles.length}
             onFileChange={(e) => void handleFileInputChange(e)}
+            onStartUpload={() => void handleStartPendingUpload()}
+            onClearPending={handleClearPendingUpload}
             onPickPhotos={() => fileInputRef.current?.click()}
           />
         </>
@@ -773,8 +893,144 @@ export function DriveApp() {
         />
       )}
 
+      <UploadReportModal
+        report={uploadBusy ? null : uploadReport}
+        onRetry={handleRetryFailedUploads}
+        onClose={() => setUploadReport(null)}
+      />
+
       <WelcomeModal open={welcomeOpen} onClose={handleWelcomeClose} />
       <UpdatesModal open={updatesOpen} onClose={handleUpdatesClose} />
+    </div>
+  );
+}
+
+function UploadReportModal({
+  report,
+  onRetry,
+  onClose,
+}: {
+  report: UploadReport | null;
+  onRetry: () => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!report) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [report, onClose]);
+
+  if (!report) return null;
+
+  const { uploaded, total, failed, retryableCount, queuedCount } = report;
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-end justify-center p-4 sm:items-center"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="upload-report-title"
+    >
+      <button
+        type="button"
+        className="absolute inset-0 bg-slate-900/45 backdrop-blur-sm"
+        aria-label="Kapat"
+        onClick={onClose}
+      />
+      <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-2xl">
+        <div className="bg-gradient-to-br from-amber-500 to-orange-600 px-6 py-5 text-white">
+          <div className="flex items-start gap-3">
+            <span className="text-3xl leading-none" aria-hidden>
+              ⚠️
+            </span>
+            <div>
+              <h2
+                id="upload-report-title"
+                className="text-xl font-bold leading-tight"
+              >
+                {failed.length} fotoğraf yüklenemedi
+              </h2>
+              <p className="mt-1 text-sm text-amber-50">
+                Lütfen yeniden deneyin.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-4 px-5 py-5">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-xl bg-emerald-50 px-4 py-3 text-center ring-1 ring-emerald-200">
+              <p className="text-2xl font-bold text-emerald-700">{uploaded}</p>
+              <p className="mt-0.5 text-xs font-medium text-emerald-800">
+                Yüklendi
+              </p>
+            </div>
+            <div className="rounded-xl bg-red-50 px-4 py-3 text-center ring-1 ring-red-200">
+              <p className="text-2xl font-bold text-red-700">{failed.length}</p>
+              <p className="mt-0.5 text-xs font-medium text-red-800">
+                Yüklenemedi
+              </p>
+            </div>
+          </div>
+
+          <p className="text-sm leading-relaxed text-slate-700">
+            Toplam <span className="font-semibold">{total}</span> medyadan{" "}
+            <span className="font-semibold">{uploaded}</span> tanesi Google
+            Drive&apos;a aktarıldı.
+            {retryableCount > 0 && (
+              <>
+                {" "}
+                <span className="font-semibold">{retryableCount}</span> dosya
+                listede tutuldu; aşağıdaki butonla tekrar deneyebilirsiniz.
+              </>
+            )}
+            {queuedCount > 0 && (
+              <>
+                {" "}
+                <span className="font-semibold">{queuedCount}</span> dosya
+                çevrimdışı kuyruğa alındı, bağlantı gelince yüklenecek.
+              </>
+            )}
+          </p>
+
+          <details className="rounded-xl border border-slate-200 bg-slate-50">
+            <summary className="cursor-pointer px-4 py-2.5 text-sm font-semibold text-slate-700">
+              Yüklenemeyen dosyalar
+            </summary>
+            <ul className="max-h-40 overflow-y-auto border-t border-slate-200 px-4 py-2 text-xs text-slate-600">
+              {failed.map((f) => (
+                <li key={f.id} className="py-1">
+                  <span className="font-medium text-slate-800">{f.name}</span>
+                  <span className="text-slate-400"> — </span>
+                  {f.error}
+                </li>
+              ))}
+            </ul>
+          </details>
+        </div>
+
+        <div className="flex flex-col gap-2 border-t border-slate-100 bg-slate-50/80 px-5 py-4 sm:flex-row-reverse">
+          {retryableCount > 0 && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="btn-primary flex-1 py-3 text-base font-semibold"
+            >
+              🔄 Yeniden dene ({retryableCount})
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 rounded-xl border border-slate-200 bg-white py-3 text-sm font-semibold text-slate-600 transition-colors hover:bg-slate-100"
+          >
+            Kapat
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

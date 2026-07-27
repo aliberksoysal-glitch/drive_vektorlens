@@ -249,20 +249,57 @@ export function FieldUploadPanel({
   uploadState,
   targetReady,
   uploadBusy,
+  pendingCount = 0,
   onFileChange,
+  onStartUpload,
+  onClearPending,
 }: {
   fileInputRef: RefObject<HTMLInputElement | null>;
   uploadState: UploadState;
   targetReady: boolean;
   uploadBusy: boolean;
+  pendingCount?: number;
   onFileChange: (e: ChangeEvent<HTMLInputElement>) => void;
+  onStartUpload?: () => void;
+  onClearPending?: () => void;
   onPickPhotos?: () => void;
 }) {
   const busy = uploadBusy || !targetReady;
   const isError = uploadState.status === "error";
+  const hasPending = pendingCount > 0;
 
   return (
     <section className="space-y-4">
+      {hasPending && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 shadow-sm ring-1 ring-blue-100">
+          <p className="text-center text-lg font-bold text-blue-900">
+            {pendingCount} medya yükleme için hazır
+          </p>
+          <p className="mt-2 text-center text-xs leading-relaxed text-blue-900/75">
+            Galeri genelde tek seferde en fazla ~100 dosya verir. Daha fazlası
+            için aşağıdaki mavi alana tekrar dokunup ekleyin.
+          </p>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onStartUpload}
+              className="btn-primary flex-1 py-3 text-sm font-semibold disabled:opacity-50"
+            >
+              Yüklemeyi başlat ({pendingCount})
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onClearPending}
+              className="btn-secondary flex-1 py-3 text-sm font-semibold disabled:opacity-50"
+            >
+              Temizle
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Wrapper: relative konumlu buton üzerine native input bindiriliyor.
           Mobil Safari/Chrome'da programatik .click() bazen güvenlik politikası
           nedeniyle galeriyi açmıyor. Native dokunuş her zaman çalışır. */}
@@ -276,10 +313,12 @@ export function FieldUploadPanel({
           ].join(" ")}
         >
           <span className="text-xl font-bold tracking-tight sm:text-2xl">
-            📸 FOTOĞRAF VEYA VİDEO
+            {hasPending ? "➕ DAHA FAZLA EKLE" : "📸 FOTOĞRAF VEYA VİDEO"}
           </span>
           <span className="max-w-sm text-sm font-medium text-blue-100">
-            Kamerayı aç veya galeriden medya seç
+            {hasPending
+              ? "Galeriden bir parti daha seçin"
+              : "Kamerayı aç veya galeriden medya seç"}
           </span>
         </div>
 
